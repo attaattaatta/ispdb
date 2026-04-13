@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
@@ -186,6 +187,11 @@ func sqlValueToString(value any) string {
 			return "on"
 		}
 		return "off"
+	case time.Time:
+		if typed.IsZero() {
+			return ""
+		}
+		return typed.Format("2006-01-02 15:04:05")
 	default:
 		return fmt.Sprint(typed)
 	}

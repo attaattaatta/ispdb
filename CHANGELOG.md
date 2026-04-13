@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.7-beta
+
+- fixed MySQL backup serialization for `time.Time` values so dump imports no longer fail on timezone-suffixed datetime literals
+
+## 0.1.6-beta
+
+- fixed MySQL backup importability by wrapping the generated SQL dump with `SET FOREIGN_KEY_CHECKS=0/1`
+
+## 0.1.5-beta
+
+- fixed MySQL `ispmgr` backup creation to dump all tables in the database instead of only the parser tracking subset
+- stopped silently ignoring MySQL backup table read errors and now return explicit errors with table names
+
+## 0.1.4-beta
+
+- added GitHub release notes configuration in `.github/release.yml` with changelog categories and excluded labels/authors
+- kept GitLab release behavior in `.gitlab-ci.yml` because GitLab does not use a direct standalone equivalent of GitHub `release.yml`
+
 ## 0.1.3-beta
 
 - fixed local MySQL fallback for servers that reject `START TRANSACTION READ ONLY WITH CONSISTENT SNAPSHOT` by adding a compatible consistent-snapshot fallback sequence

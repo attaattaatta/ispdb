@@ -19,7 +19,7 @@ docker run --rm -v "$PWD":/app -w /app golang:alpine go build -ldflags="-s -w" -
 ## Examples
 ```sh
 #./ispdb -h
-ispmanager 5+ db dump and export tool version 0.1.3-beta
+ispmanager 5+ db dump and export tool version 0.1.7-beta
 
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣴⠞⢛⣟⢛⠻⣿⣛⣛⣟⣛⠳⣦⣤⣤⣴⠶⠿⠛⢛⣻⣟⣻⣿⣿⣷⣶⣶⣤⣀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣴⠾⠛⢉⣠⡾⣿⡿⢿⣷⣶⣤⡈⠉⠉⠛⠻⢯⣥⡀⠀⣀⣤⠶⣻⣿⢻⣿⣿⣯⡍⠙⠻⢿⣿⣦⡀

@@ -196,21 +196,63 @@ func createMySQLBackup(ctx context.Context, password string, targetPath string) 
 	if _, err := fmt.Fprintf(file, "-- ispdb backup of ispmgr from %s:%d at %s UTC\n\n", defaultMySQLHost, defaultMySQLPort, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return err
 	}
+	if _, err := file.WriteString("SET FOREIGN_KEY_CHECKS=0;\n\n"); err != nil {
+		return err
+	}
 
-	for _, table := range trackedTables() {
+	tables, err := allMySQLTables(ctx, conn)
+	if err != nil {
+		return err
+	}
+
+	for _, table := range tables {
 		if err := writeTableBackup(ctx, conn, file, table); err != nil {
 			return err
 		}
 	}
 
+	if _, err := file.WriteString("SET FOREIGN_KEY_CHECKS=1;\n"); err != nil {
+		return err
+	}
+
 	return file.Close()
+}
+
+func allMySQLTables(ctx context.Context, conn *sql.Conn) ([]string, error) {
+	rows, err := conn.QueryContext(ctx, `
+		SELECT table_name
+		FROM information_schema.tables
+		WHERE table_schema = DATABASE()
+		  AND table_type = 'BASE TABLE'
+		ORDER BY table_name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MySQL tables for backup: %w", err)
+	}
+	defer rows.Close()
+
+	tables := make([]string, 0, 32)
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			return nil, fmt.Errorf("failed to scan MySQL table name for backup: %w", err)
+		}
+		tables = append(tables, table)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed while reading MySQL table list for backup: %w", err)
+	}
+	if len(tables) == 0 {
+		return nil, fmt.Errorf("no MySQL tables were found in ispmgr for backup")
+	}
+	return tables, nil
 }
 
 func writeTableBackup(ctx context.Context, conn *sql.Conn, file *os.File, table string) error {
 	var tableName string
 	var createStmt string
 	if err := conn.QueryRowContext(ctx, fmt.Sprintf("SHOW CREATE TABLE `%s`", table)).Scan(&tableName, &createStmt); err != nil {
-		return nil
+		return fmt.Errorf("failed to read CREATE TABLE for %s: %w", table, err)
 	}
 
 	if _, err := fmt.Fprintf(file, "DROP TABLE IF EXISTS `%s`;\n%s;\n", tableName, createStmt); err != nil {
@@ -219,7 +261,7 @@ func writeTableBackup(ctx context.Context, conn *sql.Conn, file *os.File, table 
 
 	rows, err := conn.QueryContext(ctx, fmt.Sprintf("SELECT * FROM `%s`", table))
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to read rows from %s: %w", table, err)
 	}
 	defer rows.Close()
 
