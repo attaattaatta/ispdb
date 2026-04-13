@@ -12,14 +12,14 @@ docker run --rm -v "$PWD":/app -w /app golang:alpine go build -ldflags="-s -w" -
 
 ## Notes
 
-- The lock file path is always `/root/ispdb.lock`.
+- The lock file path is always `/root/.ispdb/ispdb.lock`.
 - Password decryption uses RSA private decryption compatible with `openssl pkeyutl -decrypt`.
 - SQL dump parsing is implemented directly in Go and does not call `sqlite3` or `mysqldump`.
 
 ## Examples
 ```sh
 #./ispdb -h
-ispmanager 5+ db dump and export tool version 0.1.1-beta
+ispmanager 5+ db dump and export tool version 0.1.3-beta
 
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣴⠞⢛⣟⢛⠻⣿⣛⣛⣟⣛⠳⣦⣤⣤⣴⠶⠿⠛⢛⣻⣟⣻⣿⣿⣷⣶⣶⣤⣀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣴⠾⠛⢉⣠⡾⣿⡿⢿⣷⣶⣤⡈⠉⠉⠛⠻⢯⣥⡀⠀⣀⣤⠶⣻⣿⢻⣿⣿⣯⡍⠙⠻⢿⣿⣦⡀

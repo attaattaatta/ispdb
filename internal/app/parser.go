@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,7 +27,12 @@ func loadSource(ctx context.Context, cfg Config) (rawSource, error) {
 		return loadLocalMySQLSource(ctx, cfg.MySQLPassword)
 	}
 
-	content, err := os.ReadFile(cfg.DBFile)
+	file, err := os.Open(filepath.Clean(cfg.DBFile))
+	if err != nil {
+		return rawSource{}, err
+	}
+	defer file.Close()
+	content, err := io.ReadAll(file)
 	if err != nil {
 		return rawSource{}, err
 	}
@@ -56,25 +62,16 @@ func loadLocalMySQLSource(ctx context.Context, password string) (rawSource, erro
 	if err := db.PingContext(ctx); err != nil {
 		return rawSource{}, err
 	}
-
-	tables := make(map[string][]rawRow)
-	for _, table := range trackedTables() {
-		rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT * FROM `%s`", table))
-		if err != nil {
-			continue
-		}
-		parsed, err := scanRows(rows)
-		rows.Close()
-		if err != nil {
-			return rawSource{}, err
-		}
-		tables[table] = parsed
+	tables, err := queryTrackedMySQLTables(ctx, db)
+	if err != nil {
+		return rawSource{}, err
 	}
 	return rawSource{format: "MySQL", tables: tables}, nil
 }
 
 func loadSQLiteSource(ctx context.Context, path string) (rawSource, error) {
-	db, err := sql.Open("sqlite", filepath.Clean(path))
+	dsn := "file:" + filepath.ToSlash(filepath.Clean(path)) + "?mode=ro"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return rawSource{}, err
 	}
@@ -94,6 +91,58 @@ func loadSQLiteSource(ctx context.Context, path string) (rawSource, error) {
 		tables[table] = parsed
 	}
 	return rawSource{format: "SQLite", tables: tables}, nil
+}
+
+func queryTrackedMySQLTables(ctx context.Context, db *sql.DB) (map[string][]rawRow, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	if err := beginConsistentSnapshot(ctx, conn); err != nil {
+		return nil, err
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+	}()
+
+	tables := make(map[string][]rawRow)
+	for _, table := range trackedTables() {
+		rows, err := conn.QueryContext(ctx, fmt.Sprintf("SELECT * FROM `%s`", table))
+		if err != nil {
+			continue
+		}
+		parsed, err := scanRows(rows)
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		tables[table] = parsed
+	}
+	return tables, nil
+}
+
+func beginConsistentSnapshot(ctx context.Context, conn *sql.Conn) error {
+	if _, err := conn.ExecContext(ctx, "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "SET SESSION TRANSACTION READ ONLY"); err == nil {
+		if _, err := conn.ExecContext(ctx, "START TRANSACTION WITH CONSISTENT SNAPSHOT"); err == nil {
+			return nil
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "START TRANSACTION READ ONLY WITH CONSISTENT SNAPSHOT"); err == nil {
+		return nil
+	}
+	if _, err := conn.ExecContext(ctx, "START TRANSACTION WITH CONSISTENT SNAPSHOT"); err == nil {
+		return nil
+	}
+	if _, err := conn.ExecContext(ctx, "START TRANSACTION READ ONLY"); err == nil {
+		return nil
+	}
+	_, err := conn.ExecContext(ctx, "START TRANSACTION")
+	return err
 }
 
 func scanRows(rows *sql.Rows) ([]rawRow, error) {

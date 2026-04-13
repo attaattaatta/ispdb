@@ -21,7 +21,7 @@ func exportSections(sections []Section, mode string) []Section {
 				filtered = append(filtered, section)
 			}
 		case "users":
-			if section.Title == "users" || section.Title == "FTP users" {
+			if section.Title == "users" || section.Title == "FTP users" || section.Title == "db users" {
 				filtered = append(filtered, section)
 			}
 		case "webdomains":
@@ -55,8 +55,7 @@ func renderCSV(sections []Section, delimiter rune) string {
 		writer.Comma = delimiter
 		_ = writer.Write([]string{"section", section.Title})
 		_ = writer.Write(section.Headers)
-		rows, _ := rowsWithTotal(section.Headers, section.Rows)
-		for _, row := range rows {
+		for _, row := range section.Rows {
 			_ = writer.Write(row)
 		}
 		writer.Flush()
@@ -78,11 +77,10 @@ func renderJSONExport(source string, sections []Section) ([]byte, error) {
 		Sections: make([]item, 0, len(sections)),
 	}
 	for _, section := range sections {
-		rows, _ := rowsWithTotal(section.Headers, section.Rows)
 		payload.Sections = append(payload.Sections, item{
 			Title:   section.Title,
 			Headers: section.Headers,
-			Rows:    rows,
+			Rows:    section.Rows,
 		})
 	}
 	return json.MarshalIndent(payload, "", "  ")

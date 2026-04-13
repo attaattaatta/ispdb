@@ -92,6 +92,10 @@ func (a *App) Run() error {
 	if err != nil {
 		return fmt.Errorf("%s%s%s", colorRed, a.formatLoadSourceError(err), colorReset)
 	}
+	backupPath, err := ensureSourceBackup(ctx, a.cfg, raw)
+	if err != nil {
+		return fmt.Errorf("%sfailed to create database backup for %s: %v%s", colorRed, a.cfg.DBDisplay, err, colorReset)
+	}
 
 	data, err := buildSourceData(raw, a.cfg.ISPKey)
 	if err != nil {
@@ -101,7 +105,7 @@ func (a *App) Run() error {
 
 	showDataConsole := a.cfg.DestHost == "" && a.cfg.ExportFile == ""
 	if showDataConsole {
-		a.printLoadedSource(data)
+		a.printLoadedSource(backupPath, data)
 		for _, warning := range data.Warnings {
 			a.ui.Warn(warning)
 		}
@@ -139,7 +143,10 @@ func (a *App) Run() error {
 	var commandWarnings []string
 	consoleCommandText := ""
 	if needCommands {
-		commandGroups, commandWarnings = buildCommands(data, commandScope)
+		commandGroups, commandWarnings = buildCommands(data, commandScope, CommandBuildOptions{
+			DefaultIP: detectLocalIPv4(),
+			DefaultNS: defaultNameservers,
+		})
 		commands = flattenCommandGroups(commandGroups)
 		consoleCommandText = commandSectionText(commandGroups, true, true)
 	}
@@ -249,7 +256,10 @@ func (a *App) printBanner() {
 	}
 }
 
-func (a *App) printLoadedSource(data SourceData) {
+func (a *App) printLoadedSource(backupPath string, data SourceData) {
+	if backupPath != "" {
+		a.ui.Println("DB backup: " + backupPath)
+	}
 	a.ui.Println("DB: " + a.cfg.DBDisplay)
 	a.ui.Println("DB format: " + data.Format)
 	if a.cfg.ISPKey != "" {

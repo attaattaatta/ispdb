@@ -13,7 +13,14 @@ type CommandGroup struct {
 	Commands []string
 }
 
-func buildCommands(data SourceData, scope string) ([]CommandGroup, []string) {
+const defaultNameservers = "ns1.example.com. ns2.example.com."
+
+type CommandBuildOptions struct {
+	DefaultIP string
+	DefaultNS string
+}
+
+func buildCommands(data SourceData, scope string, options CommandBuildOptions) ([]CommandGroup, []string) {
 	groups := make([]CommandGroup, 0, 6)
 	warnings := make([]string, 0)
 	include := func(group string) bool {
@@ -95,7 +102,7 @@ func buildCommands(data SourceData, scope string) ([]CommandGroup, []string) {
 				"site_autosubdomain": firstNonEmpty(item.Autosubdomain, "off"),
 				"site_basedir":       "on",
 				"site_hsts":          "on",
-				"site_ipaddrs":       firstNonEmpty(item.IPAddr, "78.24.216.251"),
+				"site_ipaddrs":       firstNonEmpty(item.IPAddr, options.DefaultIP),
 				"site_ipsrc":         "manual",
 				"site_limit_ssl":     "on",
 				"site_name":          item.Name,
@@ -189,7 +196,7 @@ func buildCommands(data SourceData, scope string) ([]CommandGroup, []string) {
 	if include("email") {
 		groupCommands := make([]string, 0)
 		for _, item := range data.EmailDomains {
-			ip := firstNonEmpty(item.IP, "78.24.216.251")
+			ip := firstNonEmpty(item.IP, options.DefaultIP)
 			groupCommands = append(groupCommands, buildMgrctlCommand("emaildomain.edit", map[string]string{
 				"defaction":    "ignore",
 				"dkim":         "on",
@@ -234,10 +241,10 @@ func buildCommands(data SourceData, scope string) ([]CommandGroup, []string) {
 			groupCommands = append(groupCommands, buildMgrctlCommand("domain.edit", map[string]string{
 				"dnssec":      "off",
 				"dtype":       firstNonEmpty(item.DType, "master"),
-				"ip":          "78.24.216.251",
+				"ip":          options.DefaultIP,
 				"ipsrc":       "manual",
 				"name":        item.Name,
-				"ns":          "ns1.firstvds.ru. ns2.firstvds.ru.",
+				"ns":          firstNonEmpty(strings.TrimSpace(options.DefaultNS), defaultNameservers),
 				"owner":       item.Owner,
 				"reversezone": "",
 				"sok":         "ok",
