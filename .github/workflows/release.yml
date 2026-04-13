@@ -19,7 +19,7 @@ jobs:
             -v "$PWD":/app \
             -w /app \
             golang:alpine \
-            sh -c "go build -ldflags='-s -w' -o ispdb"
+            go build -ldflags='-s -w' -o ispdb
 
       - name: Make release
         uses: softprops/action-gh-release@v2
