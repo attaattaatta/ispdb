@@ -28,7 +28,7 @@ curl -fsSL "$(curl -fsSL http://bit.ly/4mx1gcL | grep browser_download_url | gre
 ## Примеры
 ```sh
 #./ispdb -h
-ispmanager 5+ db dump and export tool version 0.2.1-beta
+ispmanager 5+ db dump and export tool version 0.2.2-beta
 
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣴⠞⢛⣟⢛⠻⣿⣛⣛⣟⣛⠳⣦⣤⣤⣴⠶⠿⠛⢛⣻⣟⣻⣿⣿⣷⣶⣶⣤⣀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣴⠾⠛⢉⣠⡾⣿⡿⢿⣷⣶⣤⡈⠉⠉⠛⠻⢯⣥⡀⠀⣀⣤⠶⣻⣿⢻⣿⣿⣯⡍⠙⠻⢿⣿⣦⡀

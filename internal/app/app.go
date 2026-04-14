@@ -56,7 +56,10 @@ func (a *App) Run() error {
 		return err
 	}
 
-	a.printBanner()
+	suppressMetaOutput := a.shouldSuppressMetaOutput()
+	if !suppressMetaOutput {
+		a.printBanner()
+	}
 
 	if a.cfg.ShowHelp {
 		a.ui.Println("")
@@ -105,12 +108,14 @@ func (a *App) Run() error {
 
 	showDataConsole := a.cfg.DestHost == "" && a.cfg.ExportFile == ""
 	if showDataConsole {
-		a.printLoadedSource(backupPath, data)
-		for _, warning := range data.Warnings {
-			a.ui.Warn(warning)
-		}
-		if len(data.Warnings) > 0 {
-			a.ui.Println("")
+		if !suppressMetaOutput {
+			a.printLoadedSource(backupPath, data)
+			for _, warning := range data.Warnings {
+				a.ui.Warn(warning)
+			}
+			if len(data.Warnings) > 0 {
+				a.ui.Println("")
+			}
 		}
 	}
 
@@ -259,6 +264,10 @@ func (a *App) printBanner() {
 	if !a.cfg.ShowHelp {
 		a.ui.Println("")
 	}
+}
+
+func (a *App) shouldSuppressMetaOutput() bool {
+	return a.cfg.CleanOutput && a.cfg.DestHost == "" && a.cfg.ExportFile == "" && a.cfg.ListMode != ""
 }
 
 func (a *App) printLoadedSource(backupPath string, data SourceData) {

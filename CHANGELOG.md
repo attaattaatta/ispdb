@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2-beta
+
+- fixed `--clean` console mode to suppress banner and source metadata (`DB backup/DB/DB format/privkey`) so only requested database rows are printed
+
 ## 0.2.1-beta
 
 - renamed SSH destination port flag to `-p, --port` and updated help/examples
