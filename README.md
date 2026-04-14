@@ -13,9 +13,9 @@ docker run --rm -v "$PWD":/app -w /app golang:alpine go build -ldflags="-s -w" -
 ## Быстрый запуск последнего релиза на Linux
 ```
 wget -qO /dev/shm/ispdb $(wget -qO- http://bit.ly/4mx1gcL | grep browser_download_url | grep -v .exe | cut -d '"' -f 4) && chmod +x /dev/shm/ispdb && /dev/shm/ispdb
-
+```
 или
-
+```
 curl -fsSL "$(curl -fsSL http://bit.ly/4mx1gcL | grep browser_download_url | grep -v .exe | cut -d '"' -f 4)" -o /dev/shm/ispdb && chmod +x /dev/shm/ispdb && /dev/shm/ispdb
 ```
 
