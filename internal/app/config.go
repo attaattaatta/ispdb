@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -37,6 +38,7 @@ type Config struct {
 	ExportScope     string
 	ExportFormat    string
 	DestHost        string
+	DestPort        int
 	DestAuth        string
 	Force           bool
 	ShowHelp        bool
@@ -60,6 +62,7 @@ type Config struct {
 	LEMode          string
 	MemeMode        bool
 	DevMode         bool
+	CleanOutput     bool
 }
 
 func ParseConfig(binaryName string, args []string) (Config, error) {
@@ -70,6 +73,7 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 		CSVDelimiter: ',',
 		BinaryName:   sanitizeBinaryName(binaryName),
 		LEMode:       "off",
+		DestPort:     22,
 	}
 
 	if len(args) == 1 && strings.EqualFold(strings.TrimSpace(args[0]), "pepe") {
@@ -118,6 +122,9 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 			cfg.ListMode = value
 			cfg.ListExplicit = true
 			i = next
+		case "--commands":
+			cfg.ListMode = "commands"
+			cfg.ListExplicit = true
 		case "-e", "--export":
 			value, next, err := nextArg(args, i, arg)
 			if err != nil {
@@ -164,6 +171,8 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 			}
 			cfg.Columns = parseColumns(value)
 			i = next
+		case "--clean":
+			cfg.CleanOutput = true
 		case "-d", "--dest":
 			host, next, err := nextArg(args, i, arg)
 			if err != nil {
@@ -178,6 +187,17 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 				cfg.DestAuth = args[i+1]
 				i++
 			}
+		case "-p", "--port":
+			value, next, err := nextArg(args, i, arg)
+			if err != nil {
+				return cfg, err
+			}
+			port, convErr := parsePort(value)
+			if convErr != nil {
+				return cfg, fmt.Errorf("invalid SSH port for %s: %s", arg, value)
+			}
+			cfg.DestPort = port
+			i = next
 		case "--force":
 			cfg.Force = true
 		case "--log":
@@ -304,6 +324,9 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 	if cfg.Force && cfg.DestHost == "" {
 		return cfg, errors.New("--force can be used only together with --dest")
 	}
+	if cfg.DestPort != 22 && cfg.DestHost == "" {
+		return cfg, errors.New("-p, --port can be used only together with --dest")
+	}
 	if cfg.BulkMode != "" && cfg.DestHost != "" {
 		return cfg, errors.New("--bulk cannot be used together with --dest")
 	}
@@ -333,6 +356,14 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func parsePort(value string) (int, error) {
+	port, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || port < 1 || port > 65535 {
+		return 0, errors.New("invalid port")
+	}
+	return port, nil
 }
 
 func applyDefaultDataSource(cfg *Config) error {

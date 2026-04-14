@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1-beta
+
+- renamed SSH destination port flag to `-p, --port` and updated help/examples
+
+## 0.2.0-beta
+
+- added `--clean` mode for single-column text output without borders, titles, and totals
+- added `--port` option for SSH destination connections
+- added `--commands` alias for `--list commands`
+- added automatic help output after parse errors when no inline hint is already present
+
 ## 0.1.7-beta
 
 - fixed MySQL backup serialization for `time.Time` values so dump imports no longer fail on timezone-suffixed datetime literals

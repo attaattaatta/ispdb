@@ -19,16 +19,16 @@ wget -qO /dev/shm/ispdb $(wget -qO- http://bit.ly/4mx1gcL | grep browser_downloa
 curl -fsSL "$(curl -fsSL http://bit.ly/4mx1gcL | grep browser_download_url | grep -v .exe | cut -d '"' -f 4)" -o /dev/shm/ispdb && chmod +x /dev/shm/ispdb && /dev/shm/ispdb
 ```
 
-## Notes
+## Доп.инфо
 
 - Путь к lock-файлу всегда фиксированный `/root/.ispdb/ispdb.lock`.
 - Расшифровка паролей выполняется через RSA-дешифрование, совместимое с `openssl pkeyutl -decrypt`.
 - Парсинг SQL-дампов реализован напрямую на Go и не использует `sqlite3` or `mysqldump`.
 
-## Examples
+## Примеры
 ```sh
 #./ispdb -h
-ispmanager 5+ db dump and export tool version 0.1.7-beta
+ispmanager 5+ db dump and export tool version 0.2.1-beta
 
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣴⠞⢛⣟⢛⠻⣿⣛⣛⣟⣛⠳⣦⣤⣤⣴⠶⠿⠛⢛⣻⣟⣻⣿⣿⣷⣶⣶⣤⣀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣴⠾⠛⢉⣠⡾⣿⡿⢿⣷⣶⣤⡈⠉⠉⠛⠻⢯⣥⡀⠀⣀⣤⠶⣻⣿⢻⣿⣿⣯⡍⠙⠻⢿⣿⣦⡀

@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"ispdb/internal/app"
 )
 
-const version = "0.1.7-beta"
+const version = "0.2.1-beta"
 
 //go:embed internal/ascii/*.txt
 var asciiFS embed.FS
@@ -20,6 +21,10 @@ func main() {
 	if err != nil {
 		if cfg.LogLevel != "off" {
 			fmt.Fprintln(os.Stderr, err.Error())
+			if shouldShowHelpAfterParseError(err.Error()) {
+				fmt.Fprintln(os.Stderr)
+				fmt.Fprintln(os.Stderr, app.HelpText(version, binaryName))
+			}
 		}
 		os.Exit(2)
 	}
@@ -38,4 +43,19 @@ func main() {
 		}
 		os.Exit(1)
 	}
+}
+
+func shouldShowHelpAfterParseError(message string) bool {
+	hints := []string{
+		"Supported values:",
+		"Tip:",
+		"requires --",
+		"can be used only",
+	}
+	for _, hint := range hints {
+		if strings.Contains(message, hint) {
+			return false
+		}
+	}
+	return true
 }

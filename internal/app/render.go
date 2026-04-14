@@ -92,6 +92,51 @@ func renderSections(sections []Section, colorize bool) string {
 	return builder.String()
 }
 
+func renderCleanSections(sections []Section) string {
+	nonEmpty := make([]Section, 0, len(sections))
+	for _, section := range sections {
+		if len(section.Rows) > 0 {
+			nonEmpty = append(nonEmpty, section)
+		}
+	}
+	if len(nonEmpty) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	for i, section := range nonEmpty {
+		if i > 0 {
+			builder.WriteString("\n\n")
+		}
+		if len(nonEmpty) > 1 {
+			builder.WriteString(section.Title)
+			builder.WriteByte(':')
+			builder.WriteByte('\n')
+		}
+		for rowIndex, row := range section.Rows {
+			if rowIndex > 0 {
+				builder.WriteByte('\n')
+			}
+			if len(row) > 0 {
+				builder.WriteString(row[0])
+			}
+		}
+	}
+	return builder.String()
+}
+
+func canUseCleanOutput(sections []Section) bool {
+	if len(sections) == 0 {
+		return false
+	}
+	for _, section := range sections {
+		if len(section.Headers) != 1 {
+			return false
+		}
+	}
+	return true
+}
+
 func renderTextSections(sections []Section, showTitles bool, includeTotals bool) string {
 	var builder strings.Builder
 	for i, section := range sections {

@@ -126,6 +126,9 @@ func (a *App) Run() error {
 	}
 
 	consoleDataText := renderSections(sections, true)
+	if a.cfg.CleanOutput && canUseCleanOutput(sections) {
+		consoleDataText = renderCleanSections(sections)
+	}
 	needCommands := a.cfg.DestHost != "" ||
 		a.cfg.ExportScope == "commands" ||
 		(a.cfg.ExportFile != "" && a.cfg.ExportScope == "all") ||
@@ -229,7 +232,9 @@ func (a *App) writeExport(sections []Section, commandGroups []CommandGroup, comm
 			}
 			content.Write(payload)
 		default:
-			if exportScope == "data" {
+			if a.cfg.CleanOutput && canUseCleanOutput(exportSectionsList) {
+				content.WriteString(renderCleanSections(exportSectionsList))
+			} else if exportScope == "data" {
 				content.WriteString(renderTextSections(exportSectionsList, true, false))
 			} else if exportScope == "all" {
 				content.WriteString(renderTextSections(exportSectionsList, true, false))

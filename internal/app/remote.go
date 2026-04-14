@@ -157,7 +157,7 @@ func connectSSH(cfg Config) (*ssh.Client, error) {
 		if len(methods) == 0 {
 			return nil, fmt.Errorf("no usable SSH authentication method was found")
 		}
-		return ssh.Dial("tcp", net.JoinHostPort(cfg.DestHost, "22"), &ssh.ClientConfig{
+		return ssh.Dial("tcp", net.JoinHostPort(cfg.DestHost, strconv.Itoa(cfg.DestPort)), &ssh.ClientConfig{
 			User:            "root",
 			Auth:            methods,
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(),

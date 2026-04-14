@@ -27,8 +27,12 @@ func buildHelp(version string, binaryName string) string {
 	fmt.Fprintf(&builder, "Set CSV delimiter for --format csv.\n\n")
 	fmt.Fprintf(&builder, "--columns <name1,name2,...>\n")
 	fmt.Fprintf(&builder, "Show or export only selected columns.\n\n")
+	fmt.Fprintf(&builder, "--clean\n")
+	fmt.Fprintf(&builder, "When --columns has one column, print only values without table borders and totals.\n\n")
 	fmt.Fprintf(&builder, "-d, --dest <ipv4> [root_password|root_key]\n")
 	fmt.Fprintf(&builder, "Connect to destination server as root and run generated ispmanager API commands.\n\n")
+	fmt.Fprintf(&builder, "-p, --port <port>\n")
+	fmt.Fprintf(&builder, "SSH port for --dest (default: 22).\n\n")
 	fmt.Fprintf(&builder, "--force\n")
 	fmt.Fprintf(&builder, "Use only together with --dest. Ignore ispmanager API errors and panel log errors, but do not ignore SSH failures or database parsing failures.\n\n")
 	fmt.Fprintf(&builder, "--log [%s] [file]\n", strings.Join(logLevels, "|"))
@@ -63,7 +67,9 @@ func buildHelp(version string, binaryName string) string {
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list email --export /root/ispdb-email.json --format json",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list webdomains --export /root/ispdb-webdomains --format text --columns name",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list users --export /root/ispdb-users --format text --columns name,password",
+		command + " --list packages --columns name --format text --clean",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10",
+		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 -p 2222",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 /root/.ssh/id_ed25519 --force",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db --log debug",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db --log debug /root/ispdb.log",
@@ -78,4 +84,8 @@ func buildHelp(version string, binaryName string) string {
 	builder.WriteString(strings.Join(examples, "\n"))
 	builder.WriteByte('\n')
 	return builder.String()
+}
+
+func HelpText(version string, binaryName string) string {
+	return buildHelp(version, binaryName)
 }
