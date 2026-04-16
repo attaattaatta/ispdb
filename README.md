@@ -81,11 +81,29 @@ Set CSV delimiter for --format csv.
 --columns <name1,name2,...>
 Show or export only selected columns.
 
+--clean
+When --columns has one column, print or export only values without table borders and totals.
+
 -d, --dest <ipv4> [root_password|root_key]
-Connect to destination server as root and run generated ispmanager API commands.
+Connect to destination server over SSH as root and run generated ispmanager API commands.
+
+-p, --port <port>
+SSH port for --dest (default: 22).
 
 --force
 Use only together with --dest. Ignore ispmanager API errors and panel log errors, but do not ignore SSH failures or database parsing failures.
+
+--overwrite
+Use only together with --dest. Allow replacing conflicting entities on the destination side.
+
+--no-delete-packages
+Use only together with --dest. Install missing panel packages but do not remove already installed destination packages.
+
+--copy-configs
+Use only together with --dest. Copy supported service configuration files after package install and entity creation.
+
+--no-change-ip-addresses
+Use only together with --dest. Keep source IP addresses in copied configs and generated destination commands.
 
 --log [off|info|warn|error|crit|debug] [file]
 Write logs to console and optionally to file.
@@ -109,14 +127,23 @@ Each file must contain one value per line.
 --le <on|off>
 Use only with --bulk modify --type webdomains. on enables Let's Encrypt issue flow for non-wildcard domains.
 
+-v, --version
+Show version and exit.
+
 -h, --help
 Show this help.
 
 Examples:
 
+Quick Start:
+Open the default source automatically or print generated remote commands.
 ./ispdb
 ./ispdb --list all
 ./ispdb --list commands
+
+
+Export:
+Export loaded data or generated commands to text, CSV, or JSON files.
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db --list users
 ./ispdb -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-data.txt --export-data data
 ./ispdb -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-commands.txt --export-data commands
@@ -124,10 +151,27 @@ Examples:
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list email --export /root/ispdb-email.json --format json
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list webdomains --export /root/ispdb-webdomains --format text --columns name
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list users --export /root/ispdb-users --format text --columns name,password
+./ispdb --list packages --columns name --format text --clean
+./ispdb --list packages --columns name --export /root/ispdb-packages.txt --format text --clean
+
+
+Remote Migration:
+Connect to a destination server over SSH and execute generated ispmanager API commands there.
+./ispdb -d 192.0.2.10 --force
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10
+./ispdb -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 -p 2222
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 /root/.ssh/id_ed25519 --force
+./ispdb -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 --copy-configs
+
+
+Logging:
+Control console logging or additionally write logs to a file.
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db --log debug
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db --log debug /root/ispdb.log
+
+
+Bulk Operations:
+Create or modify entities from newline-separated files or stdin lists.
 ./ispdb -b create --type webdomains --domains /root/domains.txt --owners /root/owners.txt --ips /root/ips.txt
 ./ispdb -b create --type users --names stdin
 ./ispdb -b create --type databases --names /root/dbnames.txt --passwords /root/dbpasses.txt --owners /root/owners.txt --dbservers /root/dbservers.txt
