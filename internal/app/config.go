@@ -32,6 +32,7 @@ type Config struct {
 	DBFile          string
 	DBDisplay       string
 	ISPKey          string
+	ShowVersion     bool
 	ListMode        string
 	ListExplicit    bool
 	ExportFile      string
@@ -41,6 +42,10 @@ type Config struct {
 	DestPort        int
 	DestAuth        string
 	Force           bool
+	Overwrite       bool
+	CopyConfigs     bool
+	NoDeletePackages bool
+	NoChangeIPAddresses bool
 	ShowHelp        bool
 	LogLevel        string
 	LogFile         string
@@ -302,8 +307,18 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 			i = next
 		case "-h", "--help":
 			cfg.ShowHelp = true
+		case "-v", "--version":
+			cfg.ShowVersion = true
 		case "--x-dev":
 			cfg.DevMode = true
+		case "--copy-configs":
+			cfg.CopyConfigs = true
+		case "--no-delete-packages":
+			cfg.NoDeletePackages = true
+		case "--no-change-ip-addresses":
+			cfg.NoChangeIPAddresses = true
+		case "--overwrite":
+			cfg.Overwrite = true
 		default:
 			return cfg, fmt.Errorf("unknown option: %s", arg)
 		}
@@ -324,6 +339,18 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 	if cfg.Force && cfg.DestHost == "" {
 		return cfg, errors.New("--force can be used only together with --dest")
 	}
+	if cfg.CopyConfigs && cfg.DestHost == "" {
+		return cfg, errors.New("--copy-configs can be used only together with --dest")
+	}
+	if cfg.NoDeletePackages && cfg.DestHost == "" {
+		return cfg, errors.New("--no-delete-packages can be used only together with --dest")
+	}
+	if cfg.NoChangeIPAddresses && cfg.DestHost == "" {
+		return cfg, errors.New("--no-change-ip-addresses can be used only together with --dest")
+	}
+	if cfg.Overwrite && cfg.DestHost == "" {
+		return cfg, errors.New("--overwrite can be used only together with --dest")
+	}
 	if cfg.DestPort != 22 && cfg.DestHost == "" {
 		return cfg, errors.New("-p, --port can be used only together with --dest")
 	}
@@ -340,7 +367,7 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 		return cfg, errors.New("--le can be used only with --bulk modify --type webdomains")
 	}
 
-	if cfg.BulkMode != "" || cfg.ShowHelp {
+	if cfg.BulkMode != "" || cfg.ShowHelp || cfg.ShowVersion {
 		return cfg, nil
 	}
 

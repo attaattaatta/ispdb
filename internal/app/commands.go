@@ -18,6 +18,8 @@ const defaultNameservers = "ns1.example.com. ns2.example.com."
 type CommandBuildOptions struct {
 	DefaultIP string
 	DefaultNS string
+	TargetOS  string
+	TargetPanel string
 }
 
 func buildCommands(data SourceData, scope string, options CommandBuildOptions) ([]CommandGroup, []string) {
@@ -34,19 +36,9 @@ func buildCommands(data SourceData, scope string, options CommandBuildOptions) (
 	}
 
 	if include("packages") {
-		groupCommands := make([]string, 0)
-		for _, item := range data.Packages {
-			if strings.TrimSpace(item.Name) == "" {
-				continue
-			}
-			groupCommands = append(groupCommands, buildMgrctlCommand("feature.edit", map[string]string{
-				"clicked_button":       "ok",
-				"elid":                 item.Name,
-				"package_" + item.Name: "on",
-				"sok":                  "ok",
-			}))
-		}
-		appendGroup("packages", groupCommands)
+		packageGroups, packageWarnings := buildPackageCommandGroups(data.Packages, options.TargetOS, options.TargetPanel)
+		groups = append(groups, packageGroups...)
+		warnings = append(warnings, packageWarnings...)
 	}
 
 	if include("users") {
@@ -124,7 +116,7 @@ func buildCommands(data SourceData, scope string, options CommandBuildOptions) (
 			}
 			groupCommands = append(groupCommands, buildMgrctlCommand("site.edit", params))
 		}
-		appendGroup("web domains", groupCommands)
+		appendGroup("web sites", groupCommands)
 	}
 
 	if include("databases") {
@@ -275,7 +267,6 @@ func userEditParams(name string, password string) map[string]string {
 		"limit_emaildomains_enabled":   "on",
 		"limit_ftp_users_enabled":      "on",
 		"limit_php_apache_version":     "native",
-		"limit_php_cgi_version":        "native",
 		"limit_php_fpm_version":        "native",
 		"limit_php_mode":               "php_mode_mod",
 		"limit_php_mode_cgi":           "on",
@@ -378,7 +369,15 @@ func buildMgrctlCommand(function string, params map[string]string) string {
 	for key := range params {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i] == "sok" && keys[j] != "sok" {
+			return true
+		}
+		if keys[j] == "sok" && keys[i] != "sok" {
+			return false
+		}
+		return keys[i] < keys[j]
+	})
 	for _, key := range keys {
 		parts = append(parts, shellQuote(fmt.Sprintf("%s=%s", key, params[key])))
 	}

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.1-beta
+
+- renamed command export header to `commands to run at remote server:` and commented all console command group titles for safe copy/paste
+- renamed generated web command group to `web sites`
+- stopped generating empty package groups and skipped console package commands for groups absent in the source package list
+- removed invalid `limit_php_cgi_version=native` from generated `user.edit` commands
+- enabled Docker package command generation when the destination panel edition is still unknown
+- added destination retries for `user.edit` invalid CGI version errors and Docker-backed `db.server.edit` retries after automatic Docker install
+- treated known `db.server.edit` invalid `version` responses as already-existing servers on destination side
+
+## 0.3.0-beta
+
+- added `-v, --version`
+- extended `--dest` CLI with `--overwrite`, `--no-delete-packages`, `--copy-configs`, and `--no-change-ip-addresses`
+- updated help examples to use `/path/to/mysqldump/ispmgr.sql`
+- documented and preserved `--clean` behavior for single-column exports
+
 ## 0.2.2-beta
 
 - fixed `--clean` console mode to suppress banner and source metadata (`DB backup/DB/DB format/privkey`) so only requested database rows are printed

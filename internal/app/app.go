@@ -52,6 +52,11 @@ func (a *App) Run() error {
 		return nil
 	}
 
+	if a.cfg.ShowVersion {
+		a.printBanner()
+		return nil
+	}
+
 	if err := ensureLinux(); err != nil {
 		return err
 	}
@@ -154,6 +159,7 @@ func (a *App) Run() error {
 		commandGroups, commandWarnings = buildCommands(data, commandScope, CommandBuildOptions{
 			DefaultIP: detectLocalIPv4(),
 			DefaultNS: defaultNameservers,
+			TargetOS:  detectLocalOSName(),
 		})
 		commands = flattenCommandGroups(commandGroups)
 		consoleCommandText = commandSectionText(commandGroups, true, true)

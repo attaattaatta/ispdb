@@ -28,13 +28,21 @@ func buildHelp(version string, binaryName string) string {
 	fmt.Fprintf(&builder, "--columns <name1,name2,...>\n")
 	fmt.Fprintf(&builder, "Show or export only selected columns.\n\n")
 	fmt.Fprintf(&builder, "--clean\n")
-	fmt.Fprintf(&builder, "When --columns has one column, print only values without table borders and totals.\n\n")
+	fmt.Fprintf(&builder, "When --columns has one column, print or export only values without table borders and totals.\n\n")
 	fmt.Fprintf(&builder, "-d, --dest <ipv4> [root_password|root_key]\n")
 	fmt.Fprintf(&builder, "Connect to destination server as root and run generated ispmanager API commands.\n\n")
 	fmt.Fprintf(&builder, "-p, --port <port>\n")
 	fmt.Fprintf(&builder, "SSH port for --dest (default: 22).\n\n")
 	fmt.Fprintf(&builder, "--force\n")
 	fmt.Fprintf(&builder, "Use only together with --dest. Ignore ispmanager API errors and panel log errors, but do not ignore SSH failures or database parsing failures.\n\n")
+	fmt.Fprintf(&builder, "--overwrite\n")
+	fmt.Fprintf(&builder, "Use only together with --dest. Allow replacing conflicting entities on the destination side.\n\n")
+	fmt.Fprintf(&builder, "--no-delete-packages\n")
+	fmt.Fprintf(&builder, "Use only together with --dest. Install missing panel packages but do not remove already installed destination packages.\n\n")
+	fmt.Fprintf(&builder, "--copy-configs\n")
+	fmt.Fprintf(&builder, "Use only together with --dest. Copy supported service configuration files after package install and entity creation.\n\n")
+	fmt.Fprintf(&builder, "--no-change-ip-addresses\n")
+	fmt.Fprintf(&builder, "Use only together with --dest. Keep source IP addresses in copied configs and generated destination commands.\n\n")
 	fmt.Fprintf(&builder, "--log [%s] [file]\n", strings.Join(logLevels, "|"))
 	fmt.Fprintf(&builder, "Write logs to console and optionally to file.\n\n")
 	fmt.Fprintf(&builder, "-b, --bulk [%s]\n", strings.Join(bulkModes, "|"))
@@ -52,6 +60,8 @@ func buildHelp(version string, binaryName string) string {
 	fmt.Fprintf(&builder, "Each file must contain one value per line.\n\n")
 	fmt.Fprintf(&builder, "--le <on|off>\n")
 	fmt.Fprintf(&builder, "Use only with --bulk modify --type webdomains. on enables Let's Encrypt issue flow for non-wildcard domains.\n\n")
+	fmt.Fprintf(&builder, "-v, --version\n")
+	fmt.Fprintf(&builder, "Show version and exit.\n\n")
 	fmt.Fprintf(&builder, "-h, --help\n")
 	fmt.Fprintf(&builder, "Show this help.\n\n")
 
@@ -61,16 +71,18 @@ func buildHelp(version string, binaryName string) string {
 		command + " --list all",
 		command + " --list commands",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db --list users",
-		command + " -f /usr/local/mgr5/etc/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-data.txt --export-data data",
-		command + " -f /usr/local/mgr5/etc/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-commands.txt --export-data commands",
+		command + " -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-data.txt --export-data data",
+		command + " -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-commands.txt --export-data commands",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list dns --export /root/ispdb-dns.csv --format csv --csv-delimiter ';'",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list email --export /root/ispdb-email.json --format json",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list webdomains --export /root/ispdb-webdomains --format text --columns name",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list users --export /root/ispdb-users --format text --columns name,password",
 		command + " --list packages --columns name --format text --clean",
+		command + " --list packages --columns name --export /root/ispdb-packages.txt --format text --clean",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 -p 2222",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 /root/.ssh/id_ed25519 --force",
+		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 --copy-configs",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db --log debug",
 		command + " -f /usr/local/mgr5/etc/ispmgr.db --log debug /root/ispdb.log",
 		command + " -b create --type webdomains --domains /root/domains.txt --owners /root/owners.txt --ips /root/ips.txt",

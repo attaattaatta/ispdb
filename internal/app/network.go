@@ -1,6 +1,10 @@
 package app
 
-import "net"
+import (
+	"net"
+	"os"
+	"strings"
+)
 
 func detectLocalIPv4() string {
 	interfaces, err := net.Interfaces()
@@ -29,5 +33,26 @@ func detectLocalIPv4() string {
 		}
 	}
 
+	return ""
+}
+
+func detectLocalOSName() string {
+	content, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		if !strings.HasPrefix(line, "ID=") && !strings.HasPrefix(line, "NAME=") {
+			continue
+		}
+		_, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"`)
+		if value != "" {
+			return value
+		}
+	}
 	return ""
 }

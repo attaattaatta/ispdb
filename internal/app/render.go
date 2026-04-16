@@ -210,24 +210,32 @@ func renderPlainRows(rows [][]string) string {
 func commandSectionText(groups []CommandGroup, colorize bool, withHeader bool) string {
 	if len(groups) == 0 {
 		if withHeader {
-			return formatTitle("commands to run:", colorize) + "\nNo commands could be generated."
+			return formatTitle("commands to run at remote server:", colorize) + "\n\nNo commands could be generated."
 		}
 		return "No commands could be generated."
 	}
 
 	var builder strings.Builder
 	if withHeader {
-		builder.WriteString(formatTitle("commands to run:", colorize))
-		builder.WriteByte('\n')
+		builder.WriteString(formatTitle("commands to run at remote server:", colorize))
+		builder.WriteString("\n\n")
 	}
 	for i, group := range groups {
 		if i > 0 {
 			builder.WriteString("\n\n")
 		}
+		title := group.Title + ":"
 		if colorize {
-			builder.WriteString(formatTitle(group.Title+":", true))
+			if strings.HasPrefix(group.Title, "packages (") {
+				title = "# " + group.Title
+			} else {
+				title = "# " + title
+			}
+		}
+		if colorize {
+			builder.WriteString(formatTitle(title, true))
 		} else {
-			builder.WriteString(group.Title + ":")
+			builder.WriteString(title)
 		}
 		builder.WriteByte('\n')
 		builder.WriteString(strings.Join(group.Commands, "\n"))

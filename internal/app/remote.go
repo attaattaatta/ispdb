@@ -25,6 +25,7 @@ type remoteRunner struct {
 	ui         *UI
 	force      bool
 	primaryIP  string
+	cfg        Config
 }
 
 func runRemoteWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg Config, data SourceData, commands []string) error {
@@ -42,7 +43,34 @@ func runRemoteWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg Con
 	}
 	defer sftpClient.Close()
 
-	runner := &remoteRunner{client: client, sftpClient: sftpClient, logger: logger, ui: ui, force: cfg.Force}
+	runner := &remoteRunner{client: client, sftpClient: sftpClient, logger: logger, ui: ui, force: cfg.Force, cfg: cfg}
+
+	if err := runner.warnOnMemoryMismatch(ctx); err != nil {
+		logger.Debug("memory check skipped", "error", err)
+	}
+
+	panelInstalled, err := runner.panelInstalled(ctx)
+	if err != nil {
+		return err
+	}
+	if !panelInstalled {
+		ui.Warn("destination server does not have ispmanager installed.")
+		install := cfg.Force
+		if !cfg.Force {
+			install, err = askYesNoWithColor("ispmanager was not found on destination server. Install it?", true, colorYellow)
+			if err != nil {
+				return err
+			}
+		}
+		if !install {
+			return fmt.Errorf("%sdestination server does not have ispmanager installed%s", colorRed, colorReset)
+		}
+		if err := runner.installPanel(ctx, data.Packages); err != nil {
+			return err
+		}
+		ui.Success("ispmanager installation on remote side: OK")
+	}
+
 	backupPath, err := runner.prepareBackup(ctx)
 	if err != nil {
 		return err
@@ -58,7 +86,34 @@ func runRemoteWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg Con
 	}
 	ui.Success("validating ispmanager licence on remote side: OK")
 
-	for _, command := range commands {
+	if err := runner.waitForFeaturesIdle(ctx); err != nil {
+		return err
+	}
+	records, err := runner.featureRecords(ctx)
+	if err != nil {
+		return err
+	}
+	currentPackages := installedPackagesFromFeatures(records, licInfo["os"])
+	packageSteps, packageWarnings := buildPackageSyncSteps(data.Packages, currentPackages, packagePlanOptions{
+		TargetOS:         licInfo["os"],
+		TargetPanel:      licInfo["panel_name"],
+		NoDeletePackages: cfg.NoDeletePackages,
+		SkipSatisfied:    true,
+	})
+	for _, warning := range packageWarnings {
+		ui.Warn(warning)
+	}
+	for _, step := range packageSteps {
+		if err := runner.runPackageStep(ctx, step, licInfo["os"]); err != nil {
+			if !cfg.Force {
+				return err
+			}
+			ui.Warn(err.Error())
+		}
+	}
+
+	entityCommands := filterEntityCommands(commands)
+	for _, command := range entityCommands {
 		rewrittenCommand := command
 		if runner.primaryIP == "" {
 			primaryIP, ipErr := runner.primaryIPAddress(ctx)
@@ -66,12 +121,14 @@ func runRemoteWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg Con
 				runner.primaryIP = primaryIP
 			}
 		}
-		if runner.primaryIP != "" {
+		if runner.primaryIP != "" && !cfg.NoChangeIPAddresses {
 			rewrittenCommand = rewriteCommandForRemoteIP(command, runner.primaryIP)
 		}
 
 		progressID := randomProgressID()
 		commandWithProgress := addProgressID(rewrittenCommand, progressID)
+		ispmgrLines, _ := runner.logLineCount(ctx, "/usr/local/mgr5/var/ispmgr.log")
+		pkgLines, _ := runner.logLineCount(ctx, "/usr/local/mgr5/var/pkg.log")
 		skip, skipReason, err := runner.shouldSkipCommand(ctx, rewrittenCommand)
 		if err != nil {
 			return err
@@ -85,8 +142,21 @@ func runRemoteWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg Con
 		if strings.TrimSpace(output) != "" {
 			ui.Println(strings.TrimSpace(output))
 		}
+		if retriedOutput, retriedErr, handled, retryErr := runner.retryCommandIfNeeded(ctx, rewrittenCommand, progressID, output, runErr); retryErr != nil {
+			return retryErr
+		} else if handled {
+			output = retriedOutput
+			runErr = retriedErr
+			if strings.TrimSpace(output) != "" {
+				ui.Println(strings.TrimSpace(output))
+			}
+		}
 		if runErr != nil && isAlreadyExistsOutput(output) {
 			ui.Warn("entity already exists on remote side, skipped.")
+			continue
+		}
+		if runErr != nil && isDBServerAlreadyExistsOutput(rewrittenCommand, output) {
+			ui.Warn("DB server already exists on remote side, skipped.")
 			continue
 		}
 		if runErr != nil && isFeatureEditCommand(rewrittenCommand) {
@@ -98,6 +168,9 @@ func runRemoteWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg Con
 			continue
 		}
 		logErr := runner.checkLogProgress(ctx, progressID)
+		if logErr == nil {
+			logErr = runner.checkRecentLogErrors(ctx, ispmgrLines, pkgLines)
+		}
 		if runErr != nil {
 			if !cfg.Force {
 				return fmt.Errorf("%sremote API command failed: %w%s", colorRed, runErr, colorReset)
@@ -111,6 +184,15 @@ func runRemoteWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg Con
 			ui.Warn("Panel log error ignored because --force was used.")
 		}
 		ui.Success("command result: OK")
+	}
+
+	if cfg.CopyConfigs {
+		if err := runner.copyConfigs(ctx); err != nil {
+			if !cfg.Force {
+				return err
+			}
+			ui.Warn("configuration copy error ignored because --force was used.")
+		}
 	}
 
 	return nil
@@ -181,6 +263,57 @@ func connectSSH(cfg Config) (*ssh.Client, error) {
 	return nil, err
 }
 
+func (r *remoteRunner) panelInstalled(ctx context.Context) (bool, error) {
+	output, err := r.run(ctx, "sh -lc 'if [ -x /usr/local/mgr5/sbin/mgrctl ]; then echo yes; else echo no; fi'")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(output) == "yes", nil
+}
+
+func (r *remoteRunner) installPanel(ctx context.Context, packages []Package) error {
+	if err := r.ensureWget(ctx); err != nil {
+		return err
+	}
+	command := "INSTALL_MINI=yes bash <(timeout 4 wget --timeout 4 --no-check-certificate -q -O- https://download.ispmanager.com/install.sh) --ignore-hostname --dbtype mysql --release stable --ispmgr6 ispmanager-lite-common"
+	if packageSetHas(packages, "mariadb-server") {
+		command += " --mysql-server mariadb"
+	}
+	output, err := r.run(ctx, "bash -lc "+shellQuote(command))
+	if strings.TrimSpace(output) != "" {
+		r.ui.Println(strings.TrimSpace(output))
+	}
+	if err != nil {
+		return fmt.Errorf("%sfailed to install ispmanager on destination: %w%s", colorRed, err, colorReset)
+	}
+	deadline := time.Now().Add(30 * time.Minute)
+	for time.Now().Before(deadline) {
+		installed, checkErr := r.panelInstalled(ctx)
+		if checkErr == nil && installed {
+			if _, infoErr := r.licenseInfo(ctx); infoErr == nil {
+				return nil
+			}
+		}
+		time.Sleep(10 * time.Second)
+	}
+	return fmt.Errorf("%sispmanager installation did not finish in time%s", colorRed, colorReset)
+}
+
+func (r *remoteRunner) ensureWget(ctx context.Context) error {
+	output, err := r.run(ctx, "sh -lc 'command -v wget >/dev/null 2>&1 && echo yes || echo no'")
+	if err == nil && strings.TrimSpace(output) == "yes" {
+		return nil
+	}
+	install := "sh -lc 'if command -v apt-get >/dev/null 2>&1; then export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y wget; " +
+		"elif command -v dnf >/dev/null 2>&1; then dnf install -y wget; " +
+		"elif command -v yum >/dev/null 2>&1; then yum install -y wget; " +
+		"else echo unsupported-package-manager; exit 1; fi'"
+	if _, err := r.run(ctx, install); err != nil {
+		return fmt.Errorf("%sfailed to install wget on destination server: %w%s", colorRed, err, colorReset)
+	}
+	return nil
+}
+
 func publicKeyAuth(path string) (ssh.AuthMethod, error) {
 	content, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
@@ -229,15 +362,27 @@ func (r *remoteRunner) run(ctx context.Context, command string) (string, error) 
 }
 
 func (r *remoteRunner) prepareBackup(ctx context.Context) (string, error) {
-	etcSize, err := r.directoryTreeSize("/etc")
-	if err != nil {
-		return "", fmt.Errorf("%sfailed to calculate /etc size: %w%s", colorRed, err, colorReset)
+	paths := []string{"/etc", "/usr/local/mgr5"}
+	sizeValue := int64(0)
+	existing := make([]string, 0, len(paths))
+	for _, path := range paths {
+		ok, err := r.dirExists(path)
+		if err != nil {
+			return "", fmt.Errorf("%sfailed to inspect %s: %w%s", colorRed, path, err, colorReset)
+		}
+		if !ok {
+			continue
+		}
+		existing = append(existing, path)
+		value, err := r.directoryTreeSize(path)
+		if err != nil {
+			return "", fmt.Errorf("%sfailed to calculate %s size: %w%s", colorRed, path, err, colorReset)
+		}
+		sizeValue += value
 	}
-	mgrSize, err := r.directoryTreeSize("/usr/local/mgr5")
-	if err != nil {
-		return "", fmt.Errorf("%sfailed to calculate /usr/local/mgr5 size: %w%s", colorRed, err, colorReset)
+	if len(existing) == 0 {
+		return "", fmt.Errorf("%snothing was found to back up on destination server%s", colorRed, colorReset)
 	}
-	sizeValue := etcSize + mgrSize
 
 	vfs, err := r.sftpClient.StatVFS("/root")
 	if err != nil {
@@ -252,7 +397,12 @@ func (r *remoteRunner) prepareBackup(ctx context.Context) (string, error) {
 
 	stamp := time.Now().UTC().Format("02-Jan-2006-15-04-MST")
 	target := "/root/support/" + stamp
-	command := fmt.Sprintf("sh -lc %s", shellQuote(fmt.Sprintf("mkdir -p %s && cp -a /etc %s/etc && cp -a /usr/local/mgr5 %s/mgr5", target, target, target)))
+	copyParts := []string{fmt.Sprintf("mkdir -p %s", shellQuote(target))}
+	for _, path := range existing {
+		base := filepath.Base(path)
+		copyParts = append(copyParts, fmt.Sprintf("cp -a %s %s", shellQuote(path), shellQuote(target+"/"+base)))
+	}
+	command := fmt.Sprintf("sh -lc %s", shellQuote(strings.Join(copyParts, " && ")))
 	if _, err := r.run(ctx, command); err != nil {
 		r.logger.Warn("backup creation failed", "target", target, "error", err)
 		answer, askErr := askYesNo("Backup failed. Continue anyway?", true)
@@ -265,6 +415,17 @@ func (r *remoteRunner) prepareBackup(ctx context.Context) (string, error) {
 		r.ui.Warn("Continuing without a successful backup.")
 	}
 	return target, nil
+}
+
+func (r *remoteRunner) dirExists(path string) (bool, error) {
+	info, err := r.sftpClient.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return info.IsDir(), nil
 }
 
 func (r *remoteRunner) directoryTreeSize(root string) (int64, error) {
@@ -339,6 +500,383 @@ func validateLicense(info map[string]string, webDomainCount int) error {
 	return nil
 }
 
+func (r *remoteRunner) featureRecords(ctx context.Context) ([]featureRecord, error) {
+	output, err := r.run(ctx, "/usr/local/mgr5/sbin/mgrctl -m ispmgr feature")
+	if err != nil {
+		return nil, fmt.Errorf("%sfeature list request failed: %w; output: %s%s", colorRed, err, strings.TrimSpace(output), colorReset)
+	}
+	return parseFeatureRecords(output), nil
+}
+
+func (r *remoteRunner) runPackageStep(ctx context.Context, step packageSyncStep, targetOS string) error {
+	r.ui.Info("running package step: " + step.Title)
+	ispmgrLines, _ := r.logLineCount(ctx, "/usr/local/mgr5/var/ispmgr.log")
+	pkgLines, _ := r.logLineCount(ctx, "/usr/local/mgr5/var/pkg.log")
+	if err := r.runFeatureUpdate(ctx); err != nil {
+		return err
+	}
+	progressID := randomProgressID()
+	command, err := r.pruneFeatureCommand(ctx, step.Command)
+	if err != nil {
+		return err
+	}
+	command = addProgressID(command, progressID)
+	output, runErr := r.run(ctx, command)
+	if strings.TrimSpace(output) != "" {
+		r.ui.Println(strings.TrimSpace(output))
+	}
+	if runErr != nil {
+		return fmt.Errorf("%spackage step failed (%s): %w%s", colorRed, step.Title, runErr, colorReset)
+	}
+	if err := r.checkLogProgress(ctx, progressID); err != nil {
+		return err
+	}
+	if err := r.checkRecentLogErrors(ctx, ispmgrLines, pkgLines); err != nil {
+		return err
+	}
+	if err := r.waitFeatureStep(ctx, step, targetOS); err != nil {
+		return err
+	}
+	r.ui.Success(step.Title + ": OK")
+	return nil
+}
+
+func (r *remoteRunner) runFeatureUpdate(ctx context.Context) error {
+	progressID := randomProgressID()
+	command := addProgressID(featureUpdateCommand(), progressID)
+	output, err := r.run(ctx, command)
+	if strings.TrimSpace(output) != "" {
+		r.logger.Debug("feature.update output", "output", output)
+	}
+	if err != nil {
+		return fmt.Errorf("%sfeature.update failed: %w%s", colorRed, err, colorReset)
+	}
+	if err := r.checkLogProgress(ctx, progressID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *remoteRunner) waitFeatureStep(ctx context.Context, step packageSyncStep, targetOS string) error {
+	deadline := time.Now().Add(20 * time.Minute)
+	for time.Now().Before(deadline) {
+		records, err := r.featureRecords(ctx)
+		if err != nil {
+			return err
+		}
+		record := findFeatureRecord(records, step.Feature)
+		if strings.EqualFold(record.Status, "install") {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if len(step.ExpectedPackages) == 0 {
+			return nil
+		}
+		if packageSubsetPresent(installedPackagesFromFeatures(records, targetOS), step.ExpectedPackages) {
+			return nil
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("%sfeature step %s did not finish in time%s", colorRed, step.Title, colorReset)
+}
+
+func (r *remoteRunner) waitForFeaturesIdle(ctx context.Context) error {
+	deadline := time.Now().Add(20 * time.Minute)
+	for time.Now().Before(deadline) {
+		records, err := r.featureRecords(ctx)
+		if err != nil {
+			return err
+		}
+		busy := false
+		for _, record := range records {
+			if strings.EqualFold(record.Status, "install") {
+				busy = true
+				break
+			}
+		}
+		if !busy {
+			return nil
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("%sdestination panel still has unfinished feature installation tasks%s", colorRed, colorReset)
+}
+
+func (r *remoteRunner) pruneFeatureCommand(ctx context.Context, command string) (string, error) {
+	function, params, ok := parseMgrctlCommand(command)
+	if !ok || function != "feature.edit" {
+		return command, nil
+	}
+	elid := strings.TrimSpace(params["elid"])
+	if elid == "" {
+		return command, nil
+	}
+	output, err := r.run(ctx, buildMgrctlCommand("feature.edit", map[string]string{
+		"elid": elid,
+		"out":  "text",
+	}))
+	if err != nil {
+		return command, nil
+	}
+	form := parseFeatureForm(output)
+	if len(form) == 0 {
+		return command, nil
+	}
+	pruned := map[string]string{}
+	for key, value := range params {
+		switch key {
+		case "elid", "out", "sok":
+			pruned[key] = value
+		default:
+			if _, ok := form[key]; ok {
+				pruned[key] = value
+			}
+		}
+	}
+	return buildMgrctlCommand(function, pruned), nil
+}
+
+func (r *remoteRunner) retryCommandIfNeeded(ctx context.Context, command string, progressID string, output string, runErr error) (string, error, bool, error) {
+	if runErr == nil {
+		return output, runErr, false, nil
+	}
+
+	if retried, retriedErr, handled := retryWithoutInvalidUserParam(ctx, r, command, progressID, output); handled {
+		return retried, retriedErr, true, nil
+	}
+
+	if retried, retriedErr, handled, err := retryDBServerAfterDockerInstall(ctx, r, command, progressID, output); err != nil {
+		return "", err, true, err
+	} else if handled {
+		return retried, retriedErr, true, nil
+	}
+
+	return output, runErr, false, nil
+}
+
+func retryWithoutInvalidUserParam(ctx context.Context, r *remoteRunner, command string, progressID string, output string) (string, error, bool) {
+	function, params, ok := parseMgrctlCommand(command)
+	if !ok || function != "user.edit" {
+		return output, nil, false
+	}
+	if !strings.Contains(output, "ERROR value(limit_php_cgi_version)") {
+		return output, nil, false
+	}
+	r.logger.Warn("remote API rejected limit_php_cgi_version, retrying without it", "command", command, "output", output)
+	delete(params, "limit_php_cgi_version")
+	delete(params, "progressid")
+	retryCommand := addProgressID(buildMgrctlCommand(function, params), progressID)
+	retryOutput, retryErr := r.run(ctx, retryCommand)
+	return retryOutput, retryErr, true
+}
+
+func retryDBServerAfterDockerInstall(ctx context.Context, r *remoteRunner, command string, progressID string, output string) (string, error, bool, error) {
+	function, _, ok := parseMgrctlCommand(command)
+	if !ok || function != "db.server.edit" {
+		return output, nil, false, nil
+	}
+	if !strings.Contains(strings.ToLower(output), "notconfigured(nodocker)") {
+		return output, nil, false, nil
+	}
+	r.logger.Warn("remote API reported nodocker for db.server.edit, enabling docker and retrying", "command", command, "output", output)
+	if err := r.ensureDockerInstalled(ctx); err != nil {
+		return "", err, true, err
+	}
+	retryCommand := addProgressID(command, progressID)
+	retryOutput, retryErr := r.run(ctx, retryCommand)
+	return retryOutput, retryErr, true, nil
+}
+
+func (r *remoteRunner) ensureDockerInstalled(ctx context.Context) error {
+	step := packageSyncStep{
+		Title:            "packages (docker)",
+		Feature:          "docker",
+		Command:          buildMgrctlCommand("feature.edit", map[string]string{"sok": "ok", "elid": "docker", "package_docker": "on"}),
+		ExpectedPackages: []string{"docker"},
+	}
+	return r.runPackageStep(ctx, step, "")
+}
+
+func findFeatureRecord(records []featureRecord, name string) featureRecord {
+	for _, record := range records {
+		if record.Name == name {
+			return record
+		}
+	}
+	return featureRecord{}
+}
+
+func filterEntityCommands(commands []string) []string {
+	filtered := make([]string, 0, len(commands))
+	for _, command := range commands {
+		function, params, ok := parseMgrctlCommand(command)
+		if !ok {
+			filtered = append(filtered, command)
+			continue
+		}
+		if function == "feature.update" {
+			continue
+		}
+		if function == "feature.edit" {
+			elid := strings.TrimSpace(params["elid"])
+			if isPackageFeatureElid(elid) {
+				continue
+			}
+		}
+		filtered = append(filtered, command)
+	}
+	return filtered
+}
+
+func isPackageFeatureElid(elid string) bool {
+	if strings.HasPrefix(elid, "altphp") {
+		return true
+	}
+	switch elid {
+	case "web", "email", "dns", "ftp", "mysql", "postgresql", "phpmyadmin", "phppgadmin", "quota", "psacct", "fail2ban", "ansible", "nodejs", "python", "docker", "wireguard":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *remoteRunner) warnOnMemoryMismatch(ctx context.Context) error {
+	localBytes, err := localMemoryTotalBytes()
+	if err != nil {
+		return err
+	}
+	remoteBytes, err := r.remoteMemoryTotalBytes(ctx)
+	if err != nil {
+		return err
+	}
+	const gib = int64(1024 * 1024 * 1024)
+	if remoteBytes < 2*gib {
+		r.ui.Warn(fmt.Sprintf("destination memory is low: %s", humanGiB(remoteBytes)))
+		return nil
+	}
+	if localBytes-remoteBytes > 2*gib {
+		r.ui.Warn(fmt.Sprintf("destination memory (%s) is more than 2 GiB lower than source memory (%s).", humanGiB(remoteBytes), humanGiB(localBytes)))
+	}
+	return nil
+}
+
+func localMemoryTotalBytes() (int64, error) {
+	content, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	return parseMeminfoTotal(content)
+}
+
+func (r *remoteRunner) remoteMemoryTotalBytes(ctx context.Context) (int64, error) {
+	output, err := r.run(ctx, "cat /proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	return parseMeminfoTotal([]byte(output))
+}
+
+func parseMeminfoTotal(content []byte) (int64, error) {
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "MemTotal:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			break
+		}
+		value, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return value * 1024, nil
+	}
+	return 0, fmt.Errorf("MemTotal was not found")
+}
+
+func humanGiB(value int64) string {
+	return fmt.Sprintf("%.2f GiB", float64(value)/(1024*1024*1024))
+}
+
+func (r *remoteRunner) logLineCount(ctx context.Context, path string) (int, error) {
+	output, err := r.run(ctx, "sh -lc "+shellQuote("if [ -f "+path+" ]; then wc -l < "+path+"; else echo 0; fi"))
+	if err != nil {
+		return 0, err
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(output))
+	if err != nil {
+		return 0, err
+	}
+	return value, nil
+}
+
+func (r *remoteRunner) checkRecentLogErrors(ctx context.Context, ispmgrLines int, pkgLines int) error {
+	readSince := func(path string, line int) (string, error) {
+		if line < 1 {
+			line = 1
+		}
+		command := fmt.Sprintf("sh -lc %s", shellQuote(fmt.Sprintf("if [ -f %s ]; then tail -n +%d %s; fi", path, line, path)))
+		output, err := r.run(ctx, command)
+		if err != nil {
+			return "", err
+		}
+		return output, nil
+	}
+
+	combined := strings.Builder{}
+	if output, err := readSince("/usr/local/mgr5/var/ispmgr.log", ispmgrLines); err == nil {
+		combined.WriteString(output)
+		combined.WriteByte('\n')
+	}
+	if output, err := readSince("/usr/local/mgr5/var/pkg.log", pkgLines); err == nil {
+		combined.WriteString(output)
+	}
+	for _, line := range strings.Split(combined.String(), "\n") {
+		if strings.Contains(line, " ERROR ") || strings.Contains(line, " CRIT ") || strings.Contains(line, "Failed to install package") || strings.Contains(line, "finished with status 1") || strings.Contains(line, "finished with status 2") || strings.Contains(line, "return code: 1") || strings.Contains(line, "exit code 1") {
+			return fmt.Errorf("%srecent panel log error: %s%s", colorRed, strings.TrimSpace(line), colorReset)
+		}
+	}
+	return nil
+}
+
+func (r *remoteRunner) copyConfigs(ctx context.Context) error {
+	r.ui.Warn("--copy-configs currently copies only the main ispmanager configuration files.")
+	return r.copyConfigFile(ctx, "/usr/local/mgr5/etc/ispmgr.conf")
+}
+
+func (r *remoteRunner) copyConfigFile(ctx context.Context, path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.IsDir() {
+		return nil
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if !r.cfg.NoChangeIPAddresses && r.primaryIP != "" {
+		sourceIP := detectLocalIPv4()
+		if sourceIP != "" && sourceIP != "127.0.0.1" {
+			content = []byte(strings.ReplaceAll(string(content), sourceIP, r.primaryIP))
+		}
+	}
+	target, err := r.sftpClient.Create(path)
+	if err != nil {
+		return err
+	}
+	defer target.Close()
+	if _, err := target.Write(content); err != nil {
+		return err
+	}
+	return r.sftpClient.Chmod(path, info.Mode())
+}
+
 func (r *remoteRunner) checkLogProgress(ctx context.Context, progressID string) error {
 	command := fmt.Sprintf("sh -lc %s", shellQuote(fmt.Sprintf("grep -F %q /usr/local/mgr5/var/ispmgr.log | tail -n 20", progressID)))
 	output, _ := r.run(ctx, command)
@@ -346,8 +884,7 @@ func (r *remoteRunner) checkLogProgress(ctx context.Context, progressID string) 
 		r.logger.Debug("panel log check", "progressid", progressID, "output", output)
 	}
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		upper := strings.ToUpper(line)
-		if strings.Contains(upper, " ERROR ") || strings.Contains(upper, " CRIT ") || strings.Contains(line, "return code: 1") || strings.Contains(line, "exit code 1") {
+		if strings.Contains(line, " ERROR ") || strings.Contains(line, " CRIT ") || strings.Contains(line, "return code: 1") || strings.Contains(line, "exit code 1") {
 			return fmt.Errorf("%spanel log reported an error for progressid %s: %s%s", colorRed, progressID, strings.TrimSpace(line), colorReset)
 		}
 	}
@@ -373,6 +910,15 @@ func isAlreadyExistsOutput(output string) bool {
 		strings.Contains(lower, "table_value_exists(") ||
 		strings.Contains(lower, "already exists") ||
 		strings.Contains(lower, "already exist")
+}
+
+func isDBServerAlreadyExistsOutput(command string, output string) bool {
+	function, _, ok := parseMgrctlCommand(command)
+	if !ok || function != "db.server.edit" {
+		return false
+	}
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "error value(version):") && strings.Contains(lower, "the 'action' field has invalid value")
 }
 
 func isUnavailableFeatureOutput(output string) bool {

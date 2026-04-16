@@ -41,7 +41,8 @@ func runBulkWorkflow(ui *UI, cfg Config) error {
 		return err
 	}
 
-	ui.Println(formatTitle("commands to run:", true))
+	ui.Println(formatTitle("commands to run at remote server:", true))
+	ui.Println("")
 	for _, command := range commands {
 		ui.Println(command)
 	}
