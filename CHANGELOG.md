@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2-beta
+
+- renamed the `FTP users` section to `ftp users`
+- fixed duplicated `db users` output for `--list all` while keeping `db users` available in both `--list users` and `--list databases`
+- regrouped help examples into documented sections for quick start, export, remote migration, logging, and bulk operations
+- clarified changelog coverage for the recently added package sync logic, Docker retry flow, and current SSL/self-signed handling during remote command rewriting
+
 ## 0.3.1-beta
 
 - renamed command export header to `commands to run at remote server:` and commented all console command group titles for safe copy/paste
@@ -9,6 +16,8 @@
 - enabled Docker package command generation when the destination panel edition is still unknown
 - added destination retries for `user.edit` invalid CGI version errors and Docker-backed `db.server.edit` retries after automatic Docker install
 - treated known `db.server.edit` invalid `version` responses as already-existing servers on destination side
+- added grouped package synchronization commands for `web`, `email`, `dns`, `ftp`, `mysql`, `altphp`, and `others`
+- kept remote site command rewriting on `--dest` pinned to `selfsigned` certificates unless a later certificate-specific flow overrides it
 
 ## 0.3.0-beta
 

@@ -30,7 +30,7 @@ func buildHelp(version string, binaryName string) string {
 	fmt.Fprintf(&builder, "--clean\n")
 	fmt.Fprintf(&builder, "When --columns has one column, print or export only values without table borders and totals.\n\n")
 	fmt.Fprintf(&builder, "-d, --dest <ipv4> [root_password|root_key]\n")
-	fmt.Fprintf(&builder, "Connect to destination server as root and run generated ispmanager API commands.\n\n")
+	fmt.Fprintf(&builder, "Connect to destination server over SSH as root and run generated ispmanager API commands.\n\n")
 	fmt.Fprintf(&builder, "-p, --port <port>\n")
 	fmt.Fprintf(&builder, "SSH port for --dest (default: 22).\n\n")
 	fmt.Fprintf(&builder, "--force\n")
@@ -66,35 +66,78 @@ func buildHelp(version string, binaryName string) string {
 	fmt.Fprintf(&builder, "Show this help.\n\n")
 
 	fmt.Fprintf(&builder, "%sExamples:%s\n\n", colorGreen, colorReset)
-	examples := []string{
-		command,
-		command + " --list all",
-		command + " --list commands",
-		command + " -f /usr/local/mgr5/etc/ispmgr.db --list users",
-		command + " -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-data.txt --export-data data",
-		command + " -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-commands.txt --export-data commands",
-		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list dns --export /root/ispdb-dns.csv --format csv --csv-delimiter ';'",
-		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list email --export /root/ispdb-email.json --format json",
-		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list webdomains --export /root/ispdb-webdomains --format text --columns name",
-		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list users --export /root/ispdb-users --format text --columns name,password",
-		command + " --list packages --columns name --format text --clean",
-		command + " --list packages --columns name --export /root/ispdb-packages.txt --format text --clean",
-		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10",
-		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 -p 2222",
-		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 /root/.ssh/id_ed25519 --force",
-		command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 --copy-configs",
-		command + " -f /usr/local/mgr5/etc/ispmgr.db --log debug",
-		command + " -f /usr/local/mgr5/etc/ispmgr.db --log debug /root/ispdb.log",
-		command + " -b create --type webdomains --domains /root/domains.txt --owners /root/owners.txt --ips /root/ips.txt",
-		command + " -b create --type users --names stdin",
-		command + " -b create --type databases --names /root/dbnames.txt --passwords /root/dbpasses.txt --owners /root/owners.txt --dbservers /root/dbservers.txt",
-		command + " -b create --type emaildomain --domains /root/emaildomains.txt --owners /root/owners.txt --ips /root/ips.txt",
-		command + " -b create --type emailbox --names /root/mailboxes.txt --domains /root/domains.txt --passwords /root/mailpasses.txt",
-		command + " -b create --type dns --domains /root/domains.txt --owners /root/owners.txt --ips /root/ips.txt --ns /root/ns.txt",
-		command + " -b modify --type webdomains --domains /root/domains.txt --owners /root/owners.txt --ips /root/ips.txt --le on",
+	type exampleGroup struct {
+		title       string
+		description string
+		commands    []string
 	}
-	builder.WriteString(strings.Join(examples, "\n"))
-	builder.WriteByte('\n')
+	groups := []exampleGroup{
+		{
+			title:       "Quick Start",
+			description: "Open the default source automatically or print generated remote commands.",
+			commands: []string{
+				command,
+				command + " --list all",
+				command + " --list commands",
+			},
+		},
+		{
+			title:       "Export",
+			description: "Export loaded data or generated commands to text, CSV, or JSON files.",
+			commands: []string{
+				command + " -f /usr/local/mgr5/etc/ispmgr.db --list users",
+				command + " -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-data.txt --export-data data",
+				command + " -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-commands.txt --export-data commands",
+				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list dns --export /root/ispdb-dns.csv --format csv --csv-delimiter ';'",
+				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list email --export /root/ispdb-email.json --format json",
+				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list webdomains --export /root/ispdb-webdomains --format text --columns name",
+				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list users --export /root/ispdb-users --format text --columns name,password",
+				command + " --list packages --columns name --format text --clean",
+				command + " --list packages --columns name --export /root/ispdb-packages.txt --format text --clean",
+			},
+		},
+		{
+			title:       "Remote Migration",
+			description: "Connect to a destination server over SSH and execute generated ispmanager API commands there.",
+			commands: []string{
+				command + " -d 192.0.2.10 --force",
+				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10",
+				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 -p 2222",
+				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 /root/.ssh/id_ed25519 --force",
+				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 --copy-configs",
+			},
+		},
+		{
+			title:       "Logging",
+			description: "Control console logging or additionally write logs to a file.",
+			commands: []string{
+				command + " -f /usr/local/mgr5/etc/ispmgr.db --log debug",
+				command + " -f /usr/local/mgr5/etc/ispmgr.db --log debug /root/ispdb.log",
+			},
+		},
+		{
+			title:       "Bulk Operations",
+			description: "Create or modify entities from newline-separated files or stdin lists.",
+			commands: []string{
+				command + " -b create --type webdomains --domains /root/domains.txt --owners /root/owners.txt --ips /root/ips.txt",
+				command + " -b create --type users --names stdin",
+				command + " -b create --type databases --names /root/dbnames.txt --passwords /root/dbpasses.txt --owners /root/owners.txt --dbservers /root/dbservers.txt",
+				command + " -b create --type emaildomain --domains /root/emaildomains.txt --owners /root/owners.txt --ips /root/ips.txt",
+				command + " -b create --type emailbox --names /root/mailboxes.txt --domains /root/domains.txt --passwords /root/mailpasses.txt",
+				command + " -b create --type dns --domains /root/domains.txt --owners /root/owners.txt --ips /root/ips.txt --ns /root/ns.txt",
+				command + " -b modify --type webdomains --domains /root/domains.txt --owners /root/owners.txt --ips /root/ips.txt --le on",
+			},
+		},
+	}
+	for index, group := range groups {
+		if index > 0 {
+			builder.WriteByte('\n')
+		}
+		fmt.Fprintf(&builder, "%s%s:%s\n", colorGreen, group.title, colorReset)
+		fmt.Fprintf(&builder, "%s\n", group.description)
+		builder.WriteString(strings.Join(group.commands, "\n"))
+		builder.WriteString("\n\n")
+	}
 	return builder.String()
 }
 

@@ -10,7 +10,7 @@ func TestExportSectionsUsersIncludesDBUsers(t *testing.T) {
 
 	sections := []Section{
 		{Title: "users"},
-		{Title: "FTP users"},
+		{Title: "ftp users"},
 		{Title: "db users"},
 		{Title: "dns"},
 	}

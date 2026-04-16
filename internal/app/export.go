@@ -21,7 +21,7 @@ func exportSections(sections []Section, mode string) []Section {
 				filtered = append(filtered, section)
 			}
 		case "users":
-			if section.Title == "users" || section.Title == "FTP users" || section.Title == "db users" {
+			if section.Title == "users" || section.Title == "ftp users" || section.Title == "db users" {
 				filtered = append(filtered, section)
 			}
 		case "webdomains":

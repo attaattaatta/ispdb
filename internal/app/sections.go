@@ -34,7 +34,7 @@ func (s SourceData) sections(mode string) []Section {
 				EmptyMessage: "No users were found.",
 			},
 			Section{
-				Title:        "FTP users",
+				Title:        "ftp users",
 				Subtitle:     ftpSubtitle,
 				Headers:      []string{"id", "name", "active", "enabled", "home", "password", "owner"},
 				Rows:         ftpRowsData,
@@ -80,14 +80,16 @@ func (s SourceData) sections(mode string) []Section {
 				Rows:         databaseRows(s.Databases),
 				EmptyMessage: "No databases were found.",
 			},
-			Section{
+		)
+		if mode == "databases" {
+			sections = append(sections, Section{
 				Title:        "db users",
 				Subtitle:     dbSubtitle,
 				Headers:      []string{"id", "name", "password", "db_server"},
 				Rows:         dbUserRowsData,
 				EmptyMessage: "No database users were found.",
-			},
-		)
+			})
+		}
 	}
 
 	if include("email") {
