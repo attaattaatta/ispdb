@@ -125,7 +125,7 @@ Bulk input sources. Use them only together with --bulk create, --bulk modify, or
 Each file must contain one value per line.
 
 --le <on|off>
-Use only with --bulk modify --type webdomains. on enables Let's Encrypt issue flow for non-wildcard domains.
+Use only with --bulk modify --type webdomains. on enables Let\'s Encrypt issue flow for non-wildcard domains.
 
 -v, --version
 Show version and exit.
