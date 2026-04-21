@@ -30,7 +30,6 @@ curl -fsSL "$(curl -fsSL http://bit.ly/4mx1gcL | grep browser_download_url | gre
 - Парсинг SQL-дампов реализован напрямую на Go и не использует `sqlite3` or `mysqldump`.
 
 ## Примеры
-```sh
 #./ispdb -h
 ispmanager 5+ db dump and export tool version 0.4.0-beta
 
@@ -196,4 +195,4 @@ Create or modify entities from newline-separated files or stdin lists.
 ./ispdb -b create --type emailbox --names /root/mailboxes.txt --domains /root/domains.txt --passwords /root/mailpasses.txt
 ./ispdb -b create --type dns --domains /root/domains.txt --owners /root/owners.txt --ips /root/ips.txt --ns /root/ns.txt
 ./ispdb -b modify --type webdomains --domains /root/domains.txt --owners /root/owners.txt --ips /root/ips.txt --le on
-```
+
