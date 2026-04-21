@@ -6,7 +6,7 @@ func TestTrackedTablesIncludeUserLimitSources(t *testing.T) {
 	t.Parallel()
 
 	values := trackedTables()
-	required := []string{"users", "userprops", "preset", "preset_props"}
+	required := []string{"users", "userprops", "preset", "preset_props", "email_forward"}
 	for _, item := range required {
 		found := false
 		for _, value := range values {

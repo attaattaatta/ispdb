@@ -466,6 +466,7 @@ func trackedTables() []string {
 		"db_users_password",
 		"emaildomain",
 		"email",
+		"email_forward",
 		"domain",
 	}
 }
