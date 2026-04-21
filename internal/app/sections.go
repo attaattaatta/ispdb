@@ -252,6 +252,7 @@ func prepareListSection(section Section) Section {
 
 	headers, rows = reorderListColumns(section.Title, headers, rows)
 	headers = renameListHeaders(section.Title, headers)
+	rows = normalizeListRows(section.Title, headers, rows)
 
 	nameIndex := indexOfHeader(headers, "name")
 	if nameIndex >= 0 {
@@ -342,6 +343,41 @@ func renameListHeaders(title string, headers []string) []string {
 		}
 	}
 	return renamed
+}
+
+func normalizeListRows(title string, headers []string, rows [][]string) [][]string {
+	normalized := make([][]string, 0, len(rows))
+	switch strings.ToLower(strings.TrimSpace(title)) {
+	case "database servers":
+		savedverIndex := indexOfHeader(headers, "savedver")
+		if savedverIndex < 0 {
+			return rows
+		}
+		for _, row := range rows {
+			item := append([]string{}, row...)
+			if savedverIndex < len(item) {
+				item[savedverIndex] = trimDatabaseServerSavedVer(item[savedverIndex])
+			}
+			normalized = append(normalized, item)
+		}
+		return normalized
+	default:
+		return rows
+	}
+}
+
+func trimDatabaseServerSavedVer(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "PostgreSQL ") {
+		return value
+	}
+	if index := strings.Index(value, ") on "); index >= 0 {
+		return strings.TrimSpace(value[:index+1])
+	}
+	if index := strings.Index(value, ", compiled by "); index >= 0 {
+		return strings.TrimSpace(value[:index])
+	}
+	return value
 }
 
 func shouldHideListColumn(header string) bool {

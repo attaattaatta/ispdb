@@ -224,3 +224,32 @@ func TestListSectionsForScopesAddsEmailForwardColumn(t *testing.T) {
 		t.Fatalf("id header should be hidden in list view: %#v", emailBoxes.Headers)
 	}
 }
+
+func TestPrepareListSectionsTrimsPostgreSQLSavedVerForDisplay(t *testing.T) {
+	t.Parallel()
+
+	sections := prepareListSections([]Section{{
+		Title:   "database servers",
+		Headers: []string{"id", "name", "type", "host", "username", "password", "remote_access", "savedver"},
+		Rows: [][]string{{
+			"1",
+			"PostgreSQL",
+			"postgresql",
+			"localhost",
+			"postgres",
+			"",
+			"off",
+			"PostgreSQL 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+		}},
+	}})
+
+	savedverIndex := indexOfHeader(sections[0].Headers, "savedver")
+	if savedverIndex < 0 {
+		t.Fatalf("savedver header not found: %#v", sections[0].Headers)
+	}
+	got := sections[0].Rows[0][savedverIndex]
+	want := "PostgreSQL 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)"
+	if got != want {
+		t.Fatalf("unexpected trimmed savedver: %q", got)
+	}
+}
