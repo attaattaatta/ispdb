@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSectionsAllDoesNotDuplicateDBUsers(t *testing.T) {
 	t.Parallel()
@@ -116,6 +119,60 @@ func TestPrepareListSectionsHidesDisplayColumnsAndSortsByName(t *testing.T) {
 	}
 	if got := sections[0].Rows[0][0]; got != "alpha.tld" {
 		t.Fatalf("expected rows sorted by name, got first row %q", got)
+	}
+}
+
+func TestPrepareListSectionsReordersRequestedColumnsForUsers(t *testing.T) {
+	t.Parallel()
+
+	sections := prepareListSections([]Section{{
+		Title:   "users",
+		Headers: []string{"id", "name", "active", "safepasswd", "level", "home", "fullname", "uid", "gid", "shell", "tag", "create_time", "comment", "backup", "backup_type", "backup_size_limit"},
+		Rows: [][]string{
+			{"1", "alice", "on", "x", "admin", "/home/alice", "Alice", "1000", "1000", "/bin/bash", "", "", "", "on", "", ""},
+		},
+	}})
+
+	want := []string{"name", "home", "active", "level", "uid", "gid", "shell", "backup"}
+	if got := sections[0].Headers; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected users headers order: %#v", got)
+	}
+}
+
+func TestPrepareListSectionsReordersRequestedColumnsForFTPAndWebAndEmail(t *testing.T) {
+	t.Parallel()
+
+	sections := prepareListSections([]Section{
+		{
+			Title:   "ftp users",
+			Headers: []string{"id", "name", "active", "enabled", "home", "password", "owner"},
+			Rows:    [][]string{{"1", "ftp1", "on", "on", "/home/ftp1", "secret", "alice"}},
+		},
+		{
+			Title:   "web domains",
+			Headers: []string{"id", "name", "name_idn", "aliases", "docroot", "secure", "ssl_cert", "autosubdomain", "php_mode", "php_version", "active", "owner", "ipaddr", "redirect_http"},
+			Rows:    [][]string{{"1", "site.tld", "", "www.site.tld", "/var/www/site", "on", "site.tld", "off", "php_mode_mod", "isp-php83", "on", "alice", "192.0.2.1", "off"}},
+		},
+		{
+			Title:   "email boxes",
+			Headers: []string{"id", "name", "domain", "email_forward", "password", "path", "active", "maxsize", "used", "note"},
+			Rows:    [][]string{{"1", "info", "example.com", "dest@example.net", "mailpass", "/mail/info", "on", "0", "123", "note"}},
+		},
+	})
+
+	ftpWant := []string{"name", "password", "home", "active", "enabled", "owner"}
+	if got := sections[0].Headers; strings.Join(got, ",") != strings.Join(ftpWant, ",") {
+		t.Fatalf("unexpected ftp users headers order: %#v", got)
+	}
+
+	webWant := []string{"name", "aliases", "docroot", "php_version", "php_mode", "owner", "ssl_cert", "autosubdomain", "active", "ipaddr", "redirect_http"}
+	if got := sections[1].Headers; strings.Join(got, ",") != strings.Join(webWant, ",") {
+		t.Fatalf("unexpected web domains headers order: %#v", got)
+	}
+
+	emailWant := []string{"name", "domain", "password", "email_forward", "path", "active", "maxsize", "used", "note"}
+	if got := sections[2].Headers; strings.Join(got, ",") != strings.Join(emailWant, ",") {
+		t.Fatalf("unexpected email boxes headers order: %#v", got)
 	}
 }
 

@@ -250,6 +250,8 @@ func prepareListSection(section Section) Section {
 		rows = append(rows, item)
 	}
 
+	headers, rows = reorderListColumns(section.Title, headers, rows)
+
 	nameIndex := indexOfHeader(headers, "name")
 	if nameIndex >= 0 {
 		sort.SliceStable(rows, func(i, j int) bool {
@@ -265,6 +267,65 @@ func prepareListSection(section Section) Section {
 	section.Headers = headers
 	section.Rows = rows
 	return section
+}
+
+func reorderListColumns(title string, headers []string, rows [][]string) ([]string, [][]string) {
+	order := listColumnOrder(title)
+	if len(order) == 0 {
+		return headers, rows
+	}
+
+	targetIndexes := make([]int, 0, len(headers))
+	used := make([]bool, len(headers))
+	for _, want := range order {
+		index := indexOfHeader(headers, want)
+		if index < 0 || used[index] {
+			continue
+		}
+		targetIndexes = append(targetIndexes, index)
+		used[index] = true
+	}
+	for index := range headers {
+		if used[index] {
+			continue
+		}
+		targetIndexes = append(targetIndexes, index)
+	}
+
+	reorderedHeaders := make([]string, 0, len(targetIndexes))
+	for _, index := range targetIndexes {
+		reorderedHeaders = append(reorderedHeaders, headers[index])
+	}
+
+	reorderedRows := make([][]string, 0, len(rows))
+	for _, row := range rows {
+		item := make([]string, 0, len(targetIndexes))
+		for _, index := range targetIndexes {
+			if index < len(row) {
+				item = append(item, row[index])
+			} else {
+				item = append(item, "")
+			}
+		}
+		reorderedRows = append(reorderedRows, item)
+	}
+
+	return reorderedHeaders, reorderedRows
+}
+
+func listColumnOrder(title string) []string {
+	switch strings.ToLower(strings.TrimSpace(title)) {
+	case "users":
+		return []string{"name", "home", "active", "level", "uid", "gid", "shell", "backup"}
+	case "ftp users":
+		return []string{"name", "password", "home", "active", "enabled", "owner"}
+	case "web domains":
+		return []string{"name", "aliases", "docroot", "php_version", "php_mode", "owner", "ssl_cert", "autosubdomain", "active", "ipaddr", "redirect_http"}
+	case "email boxes":
+		return []string{"name", "domain", "password", "email_forward", "path", "active", "maxsize", "used", "note"}
+	default:
+		return nil
+	}
 }
 
 func shouldHideListColumn(header string) bool {
