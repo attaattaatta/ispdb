@@ -2,7 +2,7 @@
 
 ## 0.4.1-beta
 
-- updated `--list` and `--dest --list` output to hide internal columns, sort displayed rows by `name`, rename mailbox `used` to `used_mb`, and use the requested column order for `users`, `ftp users`, `web domains`, `databases`, and `email boxes`
+- updated `--list` and `--dest --list` output to hide internal columns, sort displayed rows by `name`, rename mailbox `used` to `used_mb`, trim PostgreSQL `savedver` to a shorter display form, and use the requested column order for `users`, `ftp users`, `web domains`, `databases`, and `email boxes`
 - added mailbox forwarding targets from `email_forward` to `email boxes`
 - stopped showing or reusing password-column values anywhere when `-k, --key` is missing or the private key could not be loaded, and now show `privkey:` only when the key was loaded successfully
 
