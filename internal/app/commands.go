@@ -17,11 +17,11 @@ type CommandGroup struct {
 const defaultNameservers = "ns1.example.com. ns2.example.com."
 
 type CommandBuildOptions struct {
-	DefaultIP   string
-	DefaultNS   string
-	TargetOS    string
-	TargetPanel string
-	CurrentPackages map[string]struct{}
+	DefaultIP        string
+	DefaultNS        string
+	TargetOS         string
+	TargetPanel      string
+	CurrentPackages  map[string]struct{}
 	NoDeletePackages bool
 }
 
@@ -129,10 +129,19 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 		case "databases":
 			groupCommands := make([]string, 0)
 			for _, item := range data.DBServers {
+				password := item.Password
+				if strings.TrimSpace(password) == "" {
+					generated, err := randomPassword(16)
+					if err != nil {
+						return nil, []string{fmt.Sprintf("failed to generate database server password for %s: %v", item.Name, err)}
+					}
+					password = generated
+					warnings = append(warnings, fmt.Sprintf("Database server %s password was not available, generated a random password for commands.", item.Name))
+				}
 				params := map[string]string{
 					"host":          item.Host,
 					"name":          item.Name,
-					"password":      item.Password,
+					"password":      password,
 					"remote_access": firstNonEmpty(item.RemoteAccess, "off"),
 					"sok":           "ok",
 					"type":          item.Type,

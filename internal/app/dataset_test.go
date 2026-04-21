@@ -1,6 +1,10 @@
 package app
 
-import "testing"
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestBuildSourceDataMergesPresetAndUserLimitProps(t *testing.T) {
 	t.Parallel()
@@ -76,5 +80,82 @@ func TestBuildSourceDataLoadsEmailForwards(t *testing.T) {
 	}
 	if got := data.EmailBoxes[0].Forward; got != "admin@example.net, atta.root@gmail.com" {
 		t.Fatalf("unexpected email forwards: %q", got)
+	}
+}
+
+func TestBuildSourceDataIgnoresPasswordValuesWithoutPrivateKey(t *testing.T) {
+	t.Parallel()
+
+	raw := rawSource{
+		format: "SQLite",
+		tables: map[string][]rawRow{
+			"db_server": {
+				{"id": "1", "name": "MySQL", "type": "mysql", "host": "localhost", "username": "root", "password": "ZW5jcnlwdGVk"},
+			},
+			"ftp_users": {
+				{"id": "1", "name": "ftp", "users": "2", "password": "ZW5jcnlwdGVk"},
+			},
+			"db_users_password": {
+				{"id": "1", "name": "dbuser", "db_server": "1", "password": "ZW5jcnlwdGVk"},
+			},
+			"emaildomain": {
+				{"id": "255", "name": "example.com"},
+			},
+			"email": {
+				{"id": "1", "name": "box", "domain": "255", "password": "ZW5jcnlwdGVk", "active": "on"},
+			},
+			"users": {
+				{"id": "2", "name": "owner"},
+			},
+		},
+	}
+
+	data, err := buildSourceData(raw, "")
+	if err != nil {
+		t.Fatalf("buildSourceData returned error: %v", err)
+	}
+
+	if got := data.DBServers[0].Password; got != "" {
+		t.Fatalf("expected db server password to be hidden, got %q", got)
+	}
+	if got := data.FTPUsers[0].Password; got != "" {
+		t.Fatalf("expected ftp password to be hidden, got %q", got)
+	}
+	if got := data.DBUsers[0].Password; got != "" {
+		t.Fatalf("expected db user password to be hidden, got %q", got)
+	}
+	if got := data.EmailBoxes[0].Password; got != "" {
+		t.Fatalf("expected mailbox password to be hidden, got %q", got)
+	}
+	if len(data.Warnings) == 0 || !strings.Contains(data.Warnings[0], "password values were ignored") {
+		t.Fatalf("expected warning about ignored password values, got %v", data.Warnings)
+	}
+}
+
+func TestBuildSourceDataIgnoresPasswordValuesWhenPrivateKeyLoadFails(t *testing.T) {
+	t.Parallel()
+
+	raw := rawSource{
+		format: "SQLite",
+		tables: map[string][]rawRow{
+			"db_server": {
+				{"id": "1", "name": "MySQL", "type": "mysql", "host": "localhost", "username": "root", "password": "ZW5jcnlwdGVk"},
+			},
+		},
+	}
+
+	data, err := buildSourceData(raw, filepath.Join(t.TempDir(), "missing.pem"))
+	if err != nil {
+		t.Fatalf("buildSourceData returned error: %v", err)
+	}
+
+	if data.PrivateKeyUsed {
+		t.Fatalf("expected private key to stay unused")
+	}
+	if got := data.DBServers[0].Password; got != "" {
+		t.Fatalf("expected db server password to be hidden, got %q", got)
+	}
+	if len(data.Warnings) == 0 || !strings.Contains(data.Warnings[0], "could not be loaded") {
+		t.Fatalf("expected key load warning, got %v", data.Warnings)
 	}
 }

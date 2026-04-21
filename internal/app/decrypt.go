@@ -38,16 +38,19 @@ func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
 }
 
 func decryptPassword(value string, key *rsa.PrivateKey) string {
-	if key == nil || strings.TrimSpace(value) == "" {
-		return value
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	if key == nil {
+		return ""
 	}
 	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(value))
 	if err != nil {
-		return value
+		return ""
 	}
 	plain, err := rsa.DecryptPKCS1v15(rand.Reader, key, decoded)
 	if err != nil {
-		return value
+		return ""
 	}
 	return strings.TrimRight(string(plain), "\x00\r\n")
 }

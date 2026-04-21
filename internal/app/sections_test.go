@@ -139,7 +139,7 @@ func TestPrepareListSectionsReordersRequestedColumnsForUsers(t *testing.T) {
 	}
 }
 
-func TestPrepareListSectionsReordersRequestedColumnsForFTPAndWebAndEmail(t *testing.T) {
+func TestPrepareListSectionsReordersRequestedColumnsForFTPAndWebAndEmailAndDatabases(t *testing.T) {
 	t.Parallel()
 
 	sections := prepareListSections([]Section{
@@ -158,6 +158,11 @@ func TestPrepareListSectionsReordersRequestedColumnsForFTPAndWebAndEmail(t *test
 			Headers: []string{"id", "name", "domain", "email_forward", "password", "path", "active", "maxsize", "used", "note"},
 			Rows:    [][]string{{"1", "info", "example.com", "dest@example.net", "mailpass", "/mail/info", "on", "0", "123", "note"}},
 		},
+		{
+			Title:   "databases",
+			Headers: []string{"id", "name", "unaccounted", "owner", "db_server"},
+			Rows:    [][]string{{"1", "appdb", "off", "alice", "MySQL"}},
+		},
 	})
 
 	ftpWant := []string{"name", "password", "home", "active", "enabled", "owner"}
@@ -170,9 +175,14 @@ func TestPrepareListSectionsReordersRequestedColumnsForFTPAndWebAndEmail(t *test
 		t.Fatalf("unexpected web domains headers order: %#v", got)
 	}
 
-	emailWant := []string{"name", "domain", "password", "email_forward", "path", "active", "maxsize", "used", "note"}
+	emailWant := []string{"name", "domain", "password", "email_forward", "path", "active", "maxsize", "used_mb", "note"}
 	if got := sections[2].Headers; strings.Join(got, ",") != strings.Join(emailWant, ",") {
 		t.Fatalf("unexpected email boxes headers order: %#v", got)
+	}
+
+	databaseWant := []string{"name", "owner", "db_server", "unaccounted"}
+	if got := sections[3].Headers; strings.Join(got, ",") != strings.Join(databaseWant, ",") {
+		t.Fatalf("unexpected databases headers order: %#v", got)
 	}
 }
 
@@ -206,6 +216,9 @@ func TestListSectionsForScopesAddsEmailForwardColumn(t *testing.T) {
 		t.Fatalf("email_forward header not found: %#v", emailBoxes.Headers)
 	} else if got := emailBoxes.Rows[0][idx]; got != "atta.root@gmail.com" {
 		t.Fatalf("unexpected email_forward value: %q", got)
+	}
+	if indexOfHeader(emailBoxes.Headers, "used_mb") < 0 {
+		t.Fatalf("used_mb header not found: %#v", emailBoxes.Headers)
 	}
 	if indexOfHeader(emailBoxes.Headers, "id") >= 0 {
 		t.Fatalf("id header should be hidden in list view: %#v", emailBoxes.Headers)

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -8,13 +9,13 @@ import (
 
 func buildSourceData(raw rawSource, keyPath string) (SourceData, error) {
 	key, err := loadPrivateKey(keyPath)
-	if err != nil {
-		return SourceData{}, err
-	}
-
 	data := SourceData{
 		Format:         raw.format,
 		PrivateKeyUsed: key != nil,
+	}
+	if err != nil {
+		data.Warnings = append(data.Warnings, fmt.Sprintf("ispmgr.pem key %s could not be loaded, password values were ignored.", keyPath))
+		key = nil
 	}
 
 	presetLimitsByKey := presetLimitProps(raw)
@@ -275,8 +276,8 @@ func buildSourceData(raw rawSource, keyPath string) (SourceData, error) {
 		return lessByNumericThenString(data.DNSDomains[i].ID, data.DNSDomains[j].ID, data.DNSDomains[i].Name, data.DNSDomains[j].Name)
 	})
 
-	if key == nil && hasEncryptedPasswords(raw) {
-		data.Warnings = append(data.Warnings, "No ispmgr.pem key was provided, encrypted passwords remain encrypted.")
+	if key == nil && err == nil && hasEncryptedPasswords(raw) {
+		data.Warnings = append(data.Warnings, "No ispmgr.pem key was provided, password values were ignored.")
 	}
 
 	return data, nil

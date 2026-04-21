@@ -241,8 +241,8 @@ func TestBuildCommandsForDatabasesIncludesAllDBServers(t *testing.T) {
 	}
 
 	groups, warnings := buildCommandsForScopes(data, []string{"databases"}, CommandBuildOptions{})
-	if len(warnings) != 0 {
-		t.Fatalf("expected no warnings, got %v", warnings)
+	if len(warnings) != 2 {
+		t.Fatalf("expected database server password warnings, got %v", warnings)
 	}
 
 	joined := strings.Join(flattenCommandGroups(groups), "\n")
@@ -254,5 +254,31 @@ func TestBuildCommandsForDatabasesIncludesAllDBServers(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("expected generated database commands to contain %q\n%s", want, joined)
 		}
+	}
+}
+
+func TestBuildCommandsForDatabasesGeneratesPasswordWhenDBServerPasswordIsHidden(t *testing.T) {
+	t.Parallel()
+
+	data := SourceData{
+		DBServers: []DBServer{
+			{ID: "1", Name: "MySQL", Host: "localhost", Type: "mysql", Username: "root"},
+		},
+	}
+
+	groups, warnings := buildCommandsForScopes(data, []string{"databases"}, CommandBuildOptions{})
+	if len(groups) != 1 {
+		t.Fatalf("expected one database group, got %#v", groups)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "Database server MySQL password was not available") {
+		t.Fatalf("expected database server password warning, got %v", warnings)
+	}
+
+	command := strings.Join(flattenCommandGroups(groups), "\n")
+	if !strings.Contains(command, "db.server.edit name=MySQL") {
+		t.Fatalf("expected database server command, got %s", command)
+	}
+	if strings.Contains(command, "password=''") || !strings.Contains(command, "password=") {
+		t.Fatalf("expected generated non-empty password in command, got %s", command)
 	}
 }

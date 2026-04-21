@@ -11,12 +11,12 @@ import (
 )
 
 var (
-	ensureRootHook        = ensureRoot
-	ensureLinuxHook       = ensureLinux
-	acquireLockHook       = acquireLock
-	userHomeDirHook       = os.UserHomeDir
-	askYesNoWithColorHook = askYesNoWithColor
-	runRemoteWorkflowHook = runRemoteWorkflow
+	ensureRootHook                  = ensureRoot
+	ensureLinuxHook                 = ensureLinux
+	acquireLockHook                 = acquireLock
+	userHomeDirHook                 = os.UserHomeDir
+	askYesNoWithColorHook           = askYesNoWithColor
+	runRemoteWorkflowHook           = runRemoteWorkflow
 	runRemoteWorkflowWithRunnerHook = runRemoteWorkflowWithRunner
 	buildRemoteExecutionPreviewHook = func(a *App, ctx context.Context, data SourceData, commandScopes []string) (remoteExecutionPreview, error) {
 		return a.buildRemoteExecutionPreview(ctx, data, commandScopes)
@@ -463,7 +463,7 @@ func (a *App) printLoadedSource(backupPath string, data SourceData) {
 	}
 	a.ui.Println("DB: " + a.cfg.DBDisplay)
 	a.ui.Println("DB format: " + data.Format)
-	if a.cfg.ISPKey != "" {
+	if data.PrivateKeyUsed && a.cfg.ISPKey != "" {
 		a.ui.Println("privkey: " + a.cfg.ISPKey)
 	}
 	a.ui.Println("")

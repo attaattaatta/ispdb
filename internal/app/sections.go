@@ -251,6 +251,7 @@ func prepareListSection(section Section) Section {
 	}
 
 	headers, rows = reorderListColumns(section.Title, headers, rows)
+	headers = renameListHeaders(section.Title, headers)
 
 	nameIndex := indexOfHeader(headers, "name")
 	if nameIndex >= 0 {
@@ -321,11 +322,26 @@ func listColumnOrder(title string) []string {
 		return []string{"name", "password", "home", "active", "enabled", "owner"}
 	case "web domains":
 		return []string{"name", "aliases", "docroot", "php_version", "php_mode", "owner", "ssl_cert", "autosubdomain", "active", "ipaddr", "redirect_http"}
+	case "databases":
+		return []string{"name", "owner", "db_server", "unaccounted"}
 	case "email boxes":
 		return []string{"name", "domain", "password", "email_forward", "path", "active", "maxsize", "used", "note"}
 	default:
 		return nil
 	}
+}
+
+func renameListHeaders(title string, headers []string) []string {
+	renamed := append([]string{}, headers...)
+	switch strings.ToLower(strings.TrimSpace(title)) {
+	case "email boxes":
+		for index, header := range renamed {
+			if strings.EqualFold(header, "used") {
+				renamed[index] = "used_mb"
+			}
+		}
+	}
+	return renamed
 }
 
 func shouldHideListColumn(header string) bool {
