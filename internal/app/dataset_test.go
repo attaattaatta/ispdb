@@ -47,3 +47,34 @@ func TestBuildSourceDataMergesPresetAndUserLimitProps(t *testing.T) {
 		t.Fatalf("unexpected user-derived limit_shell: %q", got)
 	}
 }
+
+func TestBuildSourceDataLoadsEmailForwards(t *testing.T) {
+	t.Parallel()
+
+	raw := rawSource{
+		format: "SQLite",
+		tables: map[string][]rawRow{
+			"emaildomain": {
+				{"id": "255", "name": "example.com"},
+			},
+			"email": {
+				{"id": "2", "name": "box", "domain": "255", "active": "on"},
+			},
+			"email_forward": {
+				{"id": "1", "name": "atta.root@gmail.com", "email": "2"},
+				{"id": "2", "name": "admin@example.net", "email": "2"},
+			},
+		},
+	}
+
+	data, err := buildSourceData(raw, "")
+	if err != nil {
+		t.Fatalf("buildSourceData returned error: %v", err)
+	}
+	if len(data.EmailBoxes) != 1 {
+		t.Fatalf("expected one email box, got %d", len(data.EmailBoxes))
+	}
+	if got := data.EmailBoxes[0].Forward; got != "admin@example.net, atta.root@gmail.com" {
+		t.Fatalf("unexpected email forwards: %q", got)
+	}
+}

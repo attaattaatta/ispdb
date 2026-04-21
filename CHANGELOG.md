@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1-beta
+
+- updated `--list` output to hide internal columns, sort displayed rows by `name`, and show mailbox forwarding targets from `email_forward`
+
 ## 0.4.0-beta
 
 - expanded `--dest` into a fuller sync workflow with clearer step-by-step progress, destination-side root validation, low-memory swapfile bootstrap on the target when needed, summary reporting, overwrite-aware skipping, and safer remote log tracking through `progressid`, panel logs, and package-operation state

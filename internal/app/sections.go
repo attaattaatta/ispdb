@@ -1,7 +1,20 @@
 package app
 
+import (
+	"sort"
+	"strings"
+)
+
 func (s SourceData) sections(mode string) []Section {
 	return s.sectionsForScopes(dataScopesFromListMode(mode))
+}
+
+func (s SourceData) listSections(mode string) []Section {
+	return prepareListSections(s.sections(mode))
+}
+
+func (s SourceData) listSectionsForScopes(scopes []string) []Section {
+	return prepareListSections(s.sectionsForScopes(scopes))
 }
 
 func (s SourceData) sectionsForScopes(scopes []string) []Section {
@@ -108,7 +121,7 @@ func (s SourceData) sectionsForScopes(scopes []string) []Section {
 			appendUnique(Section{
 				Title:        "email boxes",
 				Subtitle:     emailSubtitle,
-				Headers:      []string{"id", "name", "domain", "password", "path", "active", "maxsize", "used", "note"},
+				Headers:      []string{"id", "name", "domain", "email_forward", "password", "path", "active", "maxsize", "used", "note"},
 				Rows:         emailBoxRowsData,
 				EmptyMessage: "No email boxes were found.",
 			})
@@ -192,7 +205,7 @@ func emailDomainRows(values []EmailDomain) [][]string {
 func emailBoxRows(values []EmailBox) [][]string {
 	rows := make([][]string, 0, len(values))
 	for _, value := range values {
-		rows = append(rows, []string{value.ID, value.Name, value.Domain, value.Password, value.Path, value.Active, value.MaxSize, value.Used, value.Note})
+		rows = append(rows, []string{value.ID, value.Name, value.Domain, value.Forward, value.Password, value.Path, value.Active, value.MaxSize, value.Used, value.Note})
 	}
 	return rows
 }
@@ -203,4 +216,80 @@ func dnsRows(values []DNSDomain) [][]string {
 		rows = append(rows, []string{value.ID, value.Name, value.NameIDN, value.Owner, value.DType})
 	}
 	return rows
+}
+
+func prepareListSections(sections []Section) []Section {
+	prepared := make([]Section, 0, len(sections))
+	for _, section := range sections {
+		prepared = append(prepared, prepareListSection(section))
+	}
+	return prepared
+}
+
+func prepareListSection(section Section) Section {
+	headers := make([]string, 0, len(section.Headers))
+	indexes := make([]int, 0, len(section.Headers))
+	for index, header := range section.Headers {
+		if shouldHideListColumn(header) {
+			continue
+		}
+		headers = append(headers, header)
+		indexes = append(indexes, index)
+	}
+
+	rows := make([][]string, 0, len(section.Rows))
+	for _, row := range section.Rows {
+		item := make([]string, 0, len(indexes))
+		for _, index := range indexes {
+			if index < len(row) {
+				item = append(item, row[index])
+			} else {
+				item = append(item, "")
+			}
+		}
+		rows = append(rows, item)
+	}
+
+	nameIndex := indexOfHeader(headers, "name")
+	if nameIndex >= 0 {
+		sort.SliceStable(rows, func(i, j int) bool {
+			left := strings.ToLower(strings.TrimSpace(rows[i][nameIndex]))
+			right := strings.ToLower(strings.TrimSpace(rows[j][nameIndex]))
+			if left == right {
+				return strings.Join(rows[i], "\x00") < strings.Join(rows[j], "\x00")
+			}
+			return left < right
+		})
+	}
+
+	section.Headers = headers
+	section.Rows = rows
+	return section
+}
+
+func shouldHideListColumn(header string) bool {
+	switch strings.ToLower(strings.TrimSpace(header)) {
+	case "id",
+		"secure",
+		"name_idn",
+		"safepasswd",
+		"fullname",
+		"tag",
+		"create_time",
+		"comment",
+		"backup_type",
+		"backup_size_limit":
+		return true
+	default:
+		return false
+	}
+}
+
+func indexOfHeader(headers []string, target string) int {
+	for index, header := range headers {
+		if strings.EqualFold(header, target) {
+			return index
+		}
+	}
+	return -1
 }

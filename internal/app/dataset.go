@@ -127,6 +127,16 @@ func buildSourceData(raw rawSource, keyPath string) (SourceData, error) {
 		emailDomainNames[item.ID] = item.Name
 	}
 
+	emailForwards := map[string][]string{}
+	for _, row := range raw.tables["email_forward"] {
+		emailID := rowValue(row, "email")
+		forward := firstNonEmpty(rowValue(row, "name"), rowValue(row, "email_forward"), rowValue(row, "forward"))
+		if emailID == "" || forward == "" {
+			continue
+		}
+		emailForwards[emailID] = append(emailForwards[emailID], forward)
+	}
+
 	for _, row := range raw.tables["ftp_users"] {
 		owner := userNames[rowValue(row, "users")]
 		if owner == "" {
@@ -201,14 +211,16 @@ func buildSourceData(raw rawSource, keyPath string) (SourceData, error) {
 	}
 
 	for _, row := range raw.tables["email"] {
+		emailID := rowValue(row, "id")
 		domain := emailDomainNames[rowValue(row, "domain")]
 		if domain == "" {
 			domain = rowValue(row, "domain")
 		}
 		data.EmailBoxes = append(data.EmailBoxes, EmailBox{
-			ID:       rowValue(row, "id"),
+			ID:       emailID,
 			Name:     rowValue(row, "name"),
 			Domain:   domain,
+			Forward:  cleanAndJoin(emailForwards[emailID]),
 			Password: decryptPassword(rowValue(row, "password"), key),
 			MaxSize:  rowValue(row, "maxsize"),
 			Used:     rowValue(row, "used"),

@@ -192,7 +192,8 @@ func (a *App) Run() error {
 	}
 
 	allSections := data.sectionsForScopes(dataScopesFromListMode(a.cfg.ListMode))
-	sections := allSections
+	listSections := data.listSectionsForScopes(dataScopesFromListMode(a.cfg.ListMode))
+	sections := listSections
 	listColumns := a.cfg.Columns
 	if len(listColumns) > 0 {
 		filtered, err := filterSectionsByColumns(sections, listColumns)
@@ -373,7 +374,7 @@ func (a *App) renderOrderedListOutput(data SourceData, scopes []string, commandG
 			}
 			parts = append(parts, commandSectionTextWithOptions(commandGroups, true, true, "commands to run at remote server:", true))
 		default:
-			sections := data.sectionsForScopes([]string{scope})
+			sections := data.listSectionsForScopes([]string{scope})
 			if len(a.cfg.Columns) > 0 {
 				filtered, err := filterSectionsByColumns(sections, a.cfg.Columns)
 				if err == nil {

@@ -95,3 +95,62 @@ func TestSectionsForScopesDoesNotDuplicateDBUsersAcrossScopes(t *testing.T) {
 		t.Fatalf("expected db users section exactly once across ordered scopes, got %d", count)
 	}
 }
+
+func TestPrepareListSectionsHidesDisplayColumnsAndSortsByName(t *testing.T) {
+	t.Parallel()
+
+	sections := prepareListSections([]Section{{
+		Title:   "web domains",
+		Headers: []string{"id", "name", "name_idn", "secure", "owner"},
+		Rows: [][]string{
+			{"2", "zeta.tld", "zeta", "on", "root"},
+			{"1", "alpha.tld", "alpha", "off", "root"},
+		},
+	}})
+
+	if len(sections) != 1 {
+		t.Fatalf("expected one section, got %d", len(sections))
+	}
+	if got := sections[0].Headers; len(got) != 2 || got[0] != "name" || got[1] != "owner" {
+		t.Fatalf("unexpected headers: %#v", got)
+	}
+	if got := sections[0].Rows[0][0]; got != "alpha.tld" {
+		t.Fatalf("expected rows sorted by name, got first row %q", got)
+	}
+}
+
+func TestListSectionsForScopesAddsEmailForwardColumn(t *testing.T) {
+	t.Parallel()
+
+	data := SourceData{
+		EmailBoxes: []EmailBox{{
+			ID:      "1",
+			Name:    "box",
+			Domain:  "example.com",
+			Forward: "atta.root@gmail.com",
+			Active:  "on",
+		}},
+	}
+
+	sections := data.listSectionsForScopes([]string{"email"})
+	var emailBoxes Section
+	found := false
+	for _, section := range sections {
+		if section.Title == "email boxes" {
+			emailBoxes = section
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("email boxes section not found")
+	}
+	if idx := indexOfHeader(emailBoxes.Headers, "email_forward"); idx < 0 {
+		t.Fatalf("email_forward header not found: %#v", emailBoxes.Headers)
+	} else if got := emailBoxes.Rows[0][idx]; got != "atta.root@gmail.com" {
+		t.Fatalf("unexpected email_forward value: %q", got)
+	}
+	if indexOfHeader(emailBoxes.Headers, "id") >= 0 {
+		t.Fatalf("id header should be hidden in list view: %#v", emailBoxes.Headers)
+	}
+}

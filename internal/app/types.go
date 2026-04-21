@@ -92,6 +92,7 @@ type EmailBox struct {
 	ID       string
 	Name     string
 	Domain   string
+	Forward  string
 	Password string
 	MaxSize  string
 	Used     string

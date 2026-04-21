@@ -208,7 +208,7 @@ func renderOrderedRemoteListOutput(data SourceData, cfg Config, commandSections 
 			}
 			parts = append(parts, strings.Join(commandParts, "\n\n"))
 		default:
-			sections := data.sectionsForScopes([]string{scope})
+			sections := data.listSectionsForScopes([]string{scope})
 			if len(cfg.Columns) > 0 {
 				filtered, err := filterSectionsByColumns(sections, cfg.Columns)
 				if err != nil {
