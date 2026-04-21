@@ -301,15 +301,28 @@ func buildPackageSyncSteps(sourcePackages []Package, currentPackages map[string]
 	warnings := make([]string, 0)
 
 	appendStep := func(title string, feature string, params map[string]string, expected ...string) {
+		if params == nil {
+			return
+		}
 		if len(expected) == 0 && len(currentPackages) == 0 {
 			return
 		}
-		params["elid"] = feature
-		params["sok"] = "ok"
-		command := buildMgrctlCommand("feature.edit", params)
-		if options.SkipSatisfied && len(expected) > 0 && packageSubsetPresent(currentPackages, expected) {
-			return
+		effectiveParams := cloneStringMap(params)
+		if len(effectiveParams) == 0 {
+			effectiveParams = map[string]string{}
 		}
+		if options.SkipSatisfied {
+			if packageFeatureStateMatches(feature, effectiveParams, currentPackages) {
+				return
+			}
+			effectiveParams = filterPackageParamsByDifference(feature, effectiveParams, currentPackages)
+			if len(effectiveParams) == 0 {
+				return
+			}
+		}
+		effectiveParams["elid"] = feature
+		effectiveParams["sok"] = "ok"
+		command := buildMgrctlCommand("feature.edit", effectiveParams)
 		steps = append(steps, packageSyncStep{
 			Title:            title,
 			Feature:          feature,
@@ -350,8 +363,8 @@ func buildPackageSyncSteps(sourcePackages []Package, currentPackages map[string]
 		appendStep("packages (phppgadmin)", "phppgadmin", params, expected...)
 	}
 
-	for _, item := range buildAltPHPSteps(sourceSet, currentPackages, options) {
-		appendStep(item.Title, item.Feature, parseFeatureParams(item.Command), item.ExpectedPackages...)
+	if altPHPStep := buildAltPHPStep(sourceSet, currentPackages, options); altPHPStep != nil {
+		steps = append(steps, *altPHPStep)
 	}
 
 	for _, spec := range []struct {
@@ -383,49 +396,153 @@ func buildPackageSyncSteps(sourcePackages []Package, currentPackages map[string]
 	return steps, warnings
 }
 
+func filterPackageParamsByDifference(feature string, params map[string]string, currentPackages map[string]struct{}) map[string]string {
+	changed := map[string]string{}
+	for key, value := range params {
+		if feature == "email" && key == "package_clamav" && value == "off" {
+			changed[key] = value
+			continue
+		}
+		switch {
+		case strings.HasPrefix(key, "packagegroup_"):
+			if !packageGroupParamMatchesCurrent(feature, key, value, currentPackages) {
+				changed[key] = value
+			}
+		case strings.HasPrefix(key, "package_"):
+			if !packageToggleParamMatchesCurrent(feature, key, value, currentPackages) {
+				changed[key] = value
+			}
+		default:
+			changed[key] = value
+		}
+	}
+	if feature == "python" {
+		if _, ok := params["packagegroup_altpythongr"]; ok && hasChangedPythonToggle(changed) {
+			changed["packagegroup_altpythongr"] = params["packagegroup_altpythongr"]
+		}
+	}
+	return changed
+}
+
+func hasChangedPythonToggle(params map[string]string) bool {
+	for key := range params {
+		if strings.HasPrefix(key, "package_isppython") {
+			return true
+		}
+	}
+	return false
+}
+
+func packageFeatureStateMatches(feature string, params map[string]string, currentPackages map[string]struct{}) bool {
+	for key, value := range params {
+		switch {
+		case strings.HasPrefix(key, "packagegroup_"):
+			if !packageGroupParamMatchesCurrent(feature, key, value, currentPackages) {
+				return false
+			}
+		case strings.HasPrefix(key, "package_"):
+			if !packageToggleParamMatchesCurrent(feature, key, value, currentPackages) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func packageGroupParamMatchesCurrent(feature string, paramName string, value string, currentPackages map[string]struct{}) bool {
+	switch paramName {
+	case "packagegroup_apache":
+		current := currentApachePackage(currentPackages)
+		if value == "turn_off" {
+			return current == ""
+		}
+		return current == strings.TrimSpace(strings.ToLower(value))
+	case "packagegroup_mta":
+		current := currentMTA(currentPackages)
+		if value == "turn_off" {
+			return current == ""
+		}
+		return current == strings.TrimSpace(strings.ToLower(value))
+	case "packagegroup_dns":
+		current := currentExclusivePackage(currentPackages, []string{"bind", "powerdns"})
+		if value == "off" {
+			return current == ""
+		}
+		return current == strings.TrimSpace(strings.ToLower(value))
+	case "packagegroup_ftp":
+		current := currentExclusivePackage(currentPackages, []string{"pureftp", "proftp"})
+		if value == "turn_off" {
+			return current == ""
+		}
+		return current == strings.TrimSpace(strings.ToLower(value))
+	case "packagegroup_mysql":
+		current := currentExclusivePackage(currentPackages, []string{"mysql-server", "mariadb-server"})
+		return current == strings.TrimSpace(strings.ToLower(value))
+	case "packagegroup_altpythongr":
+		return true
+	default:
+		if strings.HasPrefix(paramName, "packagegroup_altphp") {
+			return true
+		}
+		return true
+	}
+}
+
+func packageToggleParamMatchesCurrent(feature string, paramName string, value string, currentPackages map[string]struct{}) bool {
+	packageName := packageNameForToggleParam(feature, paramName)
+	if packageName == "" {
+		return true
+	}
+	current := hasEquivalentPackage(currentPackages, packageName)
+	wantOn := strings.EqualFold(strings.TrimSpace(value), "on")
+	return current == wantOn
+}
+
+func packageNameForToggleParam(feature string, paramName string) string {
+	switch paramName {
+	case "package_phpcomposer":
+		return "composer"
+	case "package_pagespeed":
+		return "apache_pagespeed"
+	case "package_apache_modsecurity":
+		return "apache_modsecurity"
+	case "package_postgresql":
+		return "postgresql"
+	case "package_phpmyadmin":
+		return "phpmyadmin"
+	case "package_phppgadmin":
+		return "phppgadmin"
+	}
+	if strings.HasPrefix(paramName, "package_") {
+		return strings.TrimPrefix(paramName, "package_")
+	}
+	return ""
+}
+
 func buildPackageCommandGroups(sourcePackages []Package, targetOS string, targetPanel string) ([]CommandGroup, []string) {
+	return buildPackageCommandGroupsWithCurrent(sourcePackages, targetOS, targetPanel, nil, false)
+}
+
+func buildPackageCommandGroupsWithCurrent(sourcePackages []Package, targetOS string, targetPanel string, currentPackages map[string]struct{}, noDeletePackages bool) ([]CommandGroup, []string) {
 	steps, warnings := buildPackageSyncSteps(sourcePackages, map[string]struct{}{}, packagePlanOptions{
 		TargetOS:         targetOS,
 		TargetPanel:      targetPanel,
-		NoDeletePackages: false,
-		SkipSatisfied:    false,
+		NoDeletePackages: noDeletePackages,
+		SkipSatisfied:    len(currentPackages) > 0,
 	})
+	if len(currentPackages) > 0 {
+		steps, warnings = buildPackageSyncSteps(sourcePackages, currentPackages, packagePlanOptions{
+			TargetOS:         targetOS,
+			TargetPanel:      targetPanel,
+			NoDeletePackages: noDeletePackages,
+			SkipSatisfied:    true,
+		})
+	}
 	groups := make([]CommandGroup, 0, len(steps))
-	altPHP := make([]string, 0)
-	others := make([]string, 0)
 	for _, step := range steps {
-		if isAltPHPPackageTitle(step.Title) {
-			altPHP = append(altPHP, step.Command)
-			continue
-		}
-		if isOtherPackageTitle(step.Title) {
-			others = append(others, step.Command)
-			continue
-		}
 		groups = append(groups, CommandGroup{
 			Title: step.Title,
-			Commands: []string{
-				featureUpdateCommand(),
-				step.Command,
-			},
-		})
-	}
-	if len(altPHP) > 0 {
-		commands := make([]string, 0, len(altPHP)+1)
-		commands = append(commands, featureUpdateCommand())
-		commands = append(commands, altPHP...)
-		groups = append(groups, CommandGroup{
-			Title:    "packages (altphp)",
-			Commands: commands,
-		})
-	}
-	if len(others) > 0 {
-		commands := make([]string, 0, len(others)+1)
-		commands = append(commands, featureUpdateCommand())
-		commands = append(commands, others...)
-		groups = append(groups, CommandGroup{
-			Title:    "packages (others)",
-			Commands: commands,
+			Commands: []string{step.Command},
 		})
 	}
 	return groups, warnings
@@ -438,15 +555,6 @@ func featureUpdateCommand() string {
 		"upgradewarning_msg": "",
 		"sok":                "ok",
 	})
-}
-
-func isOtherPackageTitle(title string) bool {
-	switch title {
-	case "packages (postgresql)", "packages (phpmyadmin)", "packages (phppgadmin)", "packages (quota)", "packages (psacct)", "packages (fail2ban)", "packages (ansible)", "packages (nodejs)", "packages (docker)", "packages (wireguard)", "packages (python)":
-		return true
-	default:
-		return false
-	}
 }
 
 func isAltPHPPackageTitle(title string) bool {
@@ -564,6 +672,9 @@ func buildExclusiveGroupParams(feature string, paramName string, choices []strin
 			break
 		}
 	}
+	if desired == "" && current == "" {
+		return nil, nil, nil
+	}
 	value, expectedValue, conflict := resolveExclusiveValue(desired, current, options.NoDeletePackages, offValue)
 	if conflict != "" {
 		warnings = append(warnings, conflict)
@@ -630,51 +741,79 @@ func buildPythonFeatureParams(sourceSet map[string]struct{}, currentPackages map
 	return params, expected
 }
 
-func buildAltPHPSteps(sourceSet map[string]struct{}, currentPackages map[string]struct{}, options packagePlanOptions) []packageSyncStep {
-	versions := uniquePackageVersions(sourceSet, currentPackages, "ispphp")
-	steps := make([]packageSyncStep, 0, len(versions))
+func buildAltPHPStep(sourceSet map[string]struct{}, currentPackages map[string]struct{}, options packagePlanOptions) *packageSyncStep {
+	versions := uniquePackageVersions(sourceSet, map[string]struct{}{}, "ispphp")
+	if len(versions) == 0 {
+		return nil
+	}
+	expectedAll := make([]string, 0, len(versions)*2)
 	openLiteSpeed := hasPackage(sourceSet, "openlitespeed") || hasPackage(sourceSet, "openlitespeed-php")
+	elids := make([]string, 0, len(versions))
+	sampleVersion := ""
 	for _, version := range versions {
 		baseName := "ispphp" + version
 		wantBase := hasPackage(sourceSet, baseName) || hasPackage(sourceSet, baseName+"_lsapi")
-		currentBase := hasPackage(currentPackages, baseName) || hasPackage(currentPackages, baseName+"_lsapi")
-		if !wantBase && !currentBase && options.SkipSatisfied {
+		if !wantBase {
 			continue
-		}
-
-		params := map[string]string{
-			"elid":                      "altphp" + version,
-			"sok":                       "ok",
-			"packagegroup_altphp" + version + "gr": baseName,
 		}
 
 		lsapiWanted := hasPackage(sourceSet, baseName+"_lsapi")
 		if openLiteSpeed && wantBase {
 			lsapiWanted = true
 		}
-		fpmWanted := wantBase && !openLiteSpeed
-		modApacheWanted := wantBase && !openLiteSpeed
-
-		params["package_"+baseName+"_lsapi"] = toggleString(lsapiWanted || (options.NoDeletePackages && hasPackage(currentPackages, baseName+"_lsapi")))
-		params["package_"+baseName+"_fpm"] = toggleString(fpmWanted)
-		params["package_"+baseName+"_mod_apache"] = toggleString(modApacheWanted)
+		currentBase := hasPackage(currentPackages, baseName) || hasPackage(currentPackages, baseName+"_lsapi")
+		currentLSAPI := hasPackage(currentPackages, baseName+"_lsapi")
+		if options.SkipSatisfied && currentBase == wantBase && currentLSAPI == lsapiWanted {
+			continue
+		}
 
 		expected := []string{}
-		if wantBase || (options.NoDeletePackages && currentBase) {
+		if wantBase {
 			expected = append(expected, baseName)
+			elids = append(elids, "altphp"+version)
+			if sampleVersion == "" {
+				sampleVersion = version
+			}
 		}
-		if lsapiWanted || (options.NoDeletePackages && hasPackage(currentPackages, baseName+"_lsapi")) {
+		if lsapiWanted {
 			expected = append(expected, baseName+"_lsapi")
 		}
-
-		steps = append(steps, packageSyncStep{
-			Title:            "packages (altphp" + version + ")",
-			Feature:          "altphp" + version,
-			Command:          buildMgrctlCommand("feature.edit", params),
-			ExpectedPackages: expected,
-		})
+		expectedAll = append(expectedAll, expected...)
 	}
-	return steps
+	if len(elids) == 0 || sampleVersion == "" {
+		return nil
+	}
+
+	return &packageSyncStep{
+		Title:            "packages (altphp)",
+		Feature:          "altphp",
+		Command:          buildAltPHPResumeCommand(elids, sampleVersion),
+		ExpectedPackages: sortedStrings(uniqueStringsPreserveOrder(expectedAll)),
+	}
+}
+
+func buildAltPHPResumeCommand(elids []string, sampleVersion string) string {
+	return buildMgrctlCommandWithForcedQuotes("feature.resume", map[string]string{
+		"elid":   strings.Join(elids, ", "),
+		"elname": altPHPResumeName(sampleVersion),
+		"sok":    "ok",
+	}, map[string]struct{}{
+		"elid":   {},
+		"elname": {},
+	})
+}
+
+func altPHPResumeName(version string) string {
+	formatted := formatAltPHPVersion(version)
+	return "PHP " + formatted + " Apache module, PHP " + formatted + " PHP-FPM, PHP " + formatted + " common"
+}
+
+func formatAltPHPVersion(version string) string {
+	version = strings.TrimSpace(version)
+	if len(version) < 2 {
+		return version
+	}
+	return version[:1] + "." + version[1:]
 }
 
 func packageSetFromSource(values []Package) map[string]struct{} {
@@ -716,6 +855,15 @@ func currentApachePackage(currentPackages map[string]struct{}) string {
 func currentMTA(currentPackages map[string]struct{}) string {
 	if hasPackage(currentPackages, "exim") {
 		return "exim"
+	}
+	return ""
+}
+
+func currentExclusivePackage(currentPackages map[string]struct{}, choices []string) string {
+	for _, name := range choices {
+		if hasPackage(currentPackages, name) {
+			return name
+		}
 	}
 	return ""
 }
@@ -824,7 +972,7 @@ func packageSubsetPresent(values map[string]struct{}, expected []string) bool {
 		return false
 	}
 	for _, item := range expected {
-		if !hasPackage(values, item) {
+		if !hasEquivalentPackage(values, item) {
 			return false
 		}
 	}

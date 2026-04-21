@@ -16,15 +16,18 @@ import (
 
 const (
 	backupMarkerTTL    = 6 * time.Hour
-	localSupportDir    = "/root/support"
-	localStateDir      = "/root/.ispdb"
 	mysqlBackupName    = "ispmgr-mysql-backup.sql"
 	backupTimeFormat   = "02-Jan-2006-15-04-MST"
 	backupMarkerPrefix = "db-backup-"
 )
 
 func ensureSourceBackup(ctx context.Context, cfg Config, raw rawSource) (string, error) {
-	if err := cleanupExpiredBackupMarkers(); err != nil {
+	supportDir, stateDir, err := localBackupDirs()
+	if err != nil {
+		return "", err
+	}
+
+	if err := cleanupExpiredBackupMarkers(stateDir); err != nil {
 		return "", err
 	}
 
@@ -33,12 +36,12 @@ func ensureSourceBackup(ctx context.Context, cfg Config, raw rawSource) (string,
 		return "", nil
 	}
 
-	if backupPath, ok := existingBackupPath(sourceKey); ok {
+	if backupPath, ok := existingBackupPath(stateDir, sourceKey); ok {
 		return backupPath, nil
 	}
 
 	stamp := time.Now().UTC().Format(backupTimeFormat)
-	backupDir := filepath.Join(localSupportDir, stamp)
+	backupDir := filepath.Join(supportDir, stamp)
 	if err := os.MkdirAll(backupDir, 0700); err != nil {
 		return "", err
 	}
@@ -54,12 +57,24 @@ func ensureSourceBackup(ctx context.Context, cfg Config, raw rawSource) (string,
 		}
 	}
 
-	if err := writeBackupMarker(sourceKey, targetPath); err != nil {
+	if err := writeBackupMarker(stateDir, sourceKey, targetPath); err != nil {
 		return "", err
 	}
 
 	_ = raw
 	return targetPath, nil
+}
+
+func localBackupDirs() (string, string, error) {
+	home, err := userHomeDirHook()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to resolve user home directory for backup files: %w", err)
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", "", fmt.Errorf("failed to resolve user home directory for backup files: empty home path")
+	}
+	return filepath.Join(home, "support"), filepath.Join(home, ".ispdb"), nil
 }
 
 func sourceBackupKey(cfg Config) string {
@@ -79,12 +94,12 @@ func backupFileName(cfg Config) string {
 	return filepath.Base(cfg.DBFile)
 }
 
-func cleanupExpiredBackupMarkers() error {
-	if err := os.MkdirAll(localStateDir, 0700); err != nil {
+func cleanupExpiredBackupMarkers(stateDir string) error {
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return err
 	}
 
-	entries, err := os.ReadDir(localStateDir)
+	entries, err := os.ReadDir(stateDir)
 	if err != nil {
 		return err
 	}
@@ -101,13 +116,13 @@ func cleanupExpiredBackupMarkers() error {
 		if now.Sub(info.ModTime()) <= backupMarkerTTL {
 			continue
 		}
-		_ = os.Remove(filepath.Join(localStateDir, entry.Name()))
+		_ = os.Remove(filepath.Join(stateDir, entry.Name()))
 	}
 	return nil
 }
 
-func existingBackupPath(sourceKey string) (string, bool) {
-	markerPath := backupMarkerPath(sourceKey)
+func existingBackupPath(stateDir string, sourceKey string) (string, bool) {
+	markerPath := backupMarkerPath(stateDir, sourceKey)
 	info, err := os.Stat(markerPath)
 	if err != nil {
 		return "", false
@@ -131,16 +146,16 @@ func existingBackupPath(sourceKey string) (string, bool) {
 	return backupPath, true
 }
 
-func writeBackupMarker(sourceKey string, backupPath string) error {
-	if err := os.MkdirAll(localStateDir, 0700); err != nil {
+func writeBackupMarker(stateDir string, sourceKey string, backupPath string) error {
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(backupMarkerPath(sourceKey), []byte(backupPath+"\n"), 0600)
+	return os.WriteFile(backupMarkerPath(stateDir, sourceKey), []byte(backupPath+"\n"), 0600)
 }
 
-func backupMarkerPath(sourceKey string) string {
+func backupMarkerPath(stateDir string, sourceKey string) string {
 	sum := sha256.Sum256([]byte(sourceKey))
-	return filepath.Join(localStateDir, backupMarkerPrefix+hex.EncodeToString(sum[:])+".marker")
+	return filepath.Join(stateDir, backupMarkerPrefix+hex.EncodeToString(sum[:])+".marker")
 }
 
 func copyLocalFile(sourcePath string, targetPath string) error {

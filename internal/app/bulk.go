@@ -75,11 +75,14 @@ func buildBulkWebDomains(cfg Config) ([]string, error) {
 		if useLE {
 			sslCert = "letsencrypt"
 		}
+		if !useLE {
+			commands = append(commands, buildSelfSignedCertCommand(domain, owner))
+			sslCert = domain
+		}
 		commands = append(commands, buildMgrctlCommand("site.edit", map[string]string{
 			"site_name":          domain,
 			"site_aliases":       "",
 			"site_owner":         owner,
-			"site_analyzer":      "off",
 			"site_autosubdomain": "off",
 			"site_basedir":       "on",
 			"site_ipaddrs":       ip,
@@ -198,7 +201,7 @@ func buildBulkUsers(cfg Config) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		commands = append(commands, buildMgrctlCommand("user.edit", userEditParams(name, password)))
+		commands = append(commands, buildMgrctlCommand("user.edit", userEditParams(name, password, "#custom", nil)))
 	}
 	return commands, nil
 }
@@ -248,10 +251,6 @@ func buildBulkEmailDomains(cfg Config) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	ips, err := loadBulkList(cfg.IPsSource, "Please enter / paste IP addresses to use (each IP on newline)", len(domains))
-	if err != nil {
-		return nil, err
-	}
 
 	commands := make([]string, 0, len(domains))
 	for i, domain := range domains {
@@ -259,8 +258,7 @@ func buildBulkEmailDomains(cfg Config) ([]string, error) {
 			"defaction":    "ignore",
 			"dkim":         "on",
 			"dmarc":        "on",
-			"ip":           ips[i],
-			"ipsrc":        ips[i],
+			"ipsrc":        "auto",
 			"name":         domain,
 			"owner":        owners[i],
 			"secure":       "off",
@@ -397,10 +395,16 @@ func normalizeBulkValues(values []string, expected int) ([]string, bool) {
 
 func buildWebDomainModifyShellCommand(domain string, owner string, ip string, sslMode string) string {
 	elidLookup := webDomainELIDLookup(domain)
+	prelude := ""
+	siteSSLCert := shellQuote(sslMode)
+	if strings.EqualFold(sslMode, "selfsigned") {
+		prelude = buildSelfSignedCertCommand(domain, owner) + " && "
+		siteSSLCert = shellQuote(domain)
+	}
 	args := []string{
 		"/bin/sh",
 		"-lc",
-		shellQuote("elid=\"$(" + elidLookup + ")\"; [ -n \"$elid\" ] && /usr/local/mgr5/sbin/mgrctl -m ispmgr site.edit elid=\"$elid\" site_name=" + shellQuote(domain) + " site_aliases= site_owner=" + shellQuote(owner) + " site_analyzer=off site_autosubdomain=off site_basedir=on site_ipaddrs=" + shellQuote(ip) + " site_hsts=on site_ipsrc=manual site_limit_ssl=on site_ssl_port=443 site_ssl_cert=" + shellQuote(sslMode) + " site_srv_cache=off site_secure=on site_phpcomposer=off site_php_enable=on site_php_mode=php_mode_mod site_redirect_http=off sok=ok"),
+		shellQuote(prelude + "elid=\"$(" + elidLookup + ")\"; [ -n \"$elid\" ] && /usr/local/mgr5/sbin/mgrctl -m ispmgr site.edit elid=\"$elid\" site_name=" + shellQuote(domain) + " site_aliases= site_owner=" + shellQuote(owner) + " site_autosubdomain=off site_basedir=on site_ipaddrs=" + shellQuote(ip) + " site_hsts=on site_ipsrc=manual site_limit_ssl=on site_ssl_port=443 site_ssl_cert=" + siteSSLCert + " site_srv_cache=off site_secure=on site_phpcomposer=off site_php_enable=on site_php_mode=php_mode_mod site_redirect_http=off sok=ok"),
 	}
 	return strings.Join(args, " ")
 }

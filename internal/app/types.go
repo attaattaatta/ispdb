@@ -22,6 +22,8 @@ type User struct {
 	Backup          string
 	BackupType      string
 	BackupSizeLimit string
+	Preset          string
+	LimitProps      map[string]string
 }
 
 type FTPUser struct {

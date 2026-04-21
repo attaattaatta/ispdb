@@ -1,29 +1,60 @@
 package main
 
-import "testing"
+import (
+	"testing"
 
-func TestShouldShowHelpAfterParseError(t *testing.T) {
+	"ispdb/internal/app"
+)
+
+func TestParseErrorTip(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name    string
-		message string
-		want    bool
-	}{
-		{name: "unknown option", message: "unknown option: --foo", want: true},
-		{name: "supported values hint", message: "unsupported --list value: x. Supported values: all, dns", want: false},
-		{name: "tip hint", message: "failed to load\nTip: use ispdb -h", want: false},
-		{name: "requires hint", message: "--bulk create requires --type", want: false},
+	if got := parseErrorTip("unknown option: --oops"); got != helpTip() {
+		t.Fatalf("expected standard help tip, got %q", got)
 	}
+}
 
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := shouldShowHelpAfterParseError(tc.message)
-			if got != tc.want {
-				t.Fatalf("shouldShowHelpAfterParseError(%q) = %v, want %v", tc.message, got, tc.want)
-			}
-		})
+func TestParseErrorTipEmptyMessage(t *testing.T) {
+	t.Parallel()
+
+	if got := parseErrorTip(""); got != "" {
+		t.Fatalf("expected empty tip for empty message, got %q", got)
+	}
+}
+
+func TestRequiresRootForArgs(t *testing.T) {
+	t.Parallel()
+
+	if app.RequiresRootForArgs([]string{"--list", "packages", "-h"}) {
+		t.Fatalf("expected -h to bypass root requirement")
+	}
+	if app.RequiresRootForArgs([]string{"--help"}) {
+		t.Fatalf("expected --help to bypass root requirement")
+	}
+	if app.RequiresRootForArgs([]string{"--version"}) {
+		t.Fatalf("expected --version to bypass root requirement")
+	}
+	if app.RequiresRootForArgs([]string{"-v"}) {
+		t.Fatalf("expected -v to bypass root requirement")
+	}
+	if app.RequiresRootForArgs([]string{"-f", "/tmp/ispmgr.db", "--list", "users"}) {
+		t.Fatalf("expected -f to bypass root requirement")
+	}
+	if app.RequiresRootForArgs([]string{"--dest", "192.0.2.10"}) {
+		t.Fatalf("expected --dest to bypass local root preflight")
+	}
+	if app.RequiresRootForArgs([]string{"--file", "/tmp/ispmgr.sql", "--dest", "192.0.2.10"}) {
+		t.Fatalf("expected --dest with --file to bypass local root preflight")
+	}
+	if !app.RequiresRootForArgs([]string{"--list", "users"}) {
+		t.Fatalf("expected regular list without -f to require root")
+	}
+}
+
+func TestHelpTip(t *testing.T) {
+	t.Parallel()
+
+	if got := helpTip(); got != "Tip: -h, --help to show help" {
+		t.Fatalf("unexpected help tip %q", got)
 	}
 }

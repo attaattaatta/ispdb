@@ -13,16 +13,16 @@ import (
 const (
 	defaultDBPath    = "/usr/local/mgr5/etc/ispmgr.db"
 	defaultKeyPath   = "/usr/local/mgr5/etc/ispmgr.pem"
-	defaultLock      = "/root/.ispdb/ispdb.lock"
 	defaultMySQLHost = "localhost"
 	defaultMySQLPort = 3306
 )
 
 var (
 	listModes     = []string{"all", "commands", "packages", "webdomains", "databases", "users", "email", "dns"}
+	destModes     = []string{"all", "packages", "webdomains", "databases", "users", "email", "dns"}
 	exportScopes  = []string{"all", "data", "commands", "packages", "webdomains", "databases", "users", "email", "dns"}
 	exportFormats = []string{"text", "csv", "json"}
-	logLevels     = []string{"off", "info", "warn", "error", "crit", "debug"}
+	logLevels     = []string{"debug", "info", "warn", "error", "crit", "off"}
 	bulkModes     = []string{"create", "modify", "delete"}
 	bulkTypes     = []string{"webdomains", "databases", "users", "emaildomain", "emailbox", "dns"}
 	leModes       = []string{"on", "off"}
@@ -41,7 +41,9 @@ type Config struct {
 	DestHost        string
 	DestPort        int
 	DestAuth        string
+	DestScope       string
 	Force           bool
+	AutoYes         bool
 	Overwrite       bool
 	CopyConfigs     bool
 	NoDeletePackages bool
@@ -79,6 +81,7 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 		BinaryName:   sanitizeBinaryName(binaryName),
 		LEMode:       "off",
 		DestPort:     22,
+		DestScope:    "all",
 	}
 
 	if len(args) == 1 && strings.EqualFold(strings.TrimSpace(args[0]), "pepe") {
@@ -115,16 +118,16 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 			}
 			cfg.ISPKey = filepath.Clean(value)
 			i = next
-		case "--list":
+		case "-l", "--list":
 			value, next, err := nextArg(args, i, arg)
 			if err != nil {
 				return cfg, err
 			}
-			value = strings.ToLower(value)
-			if !contains(listModes, value) {
-				return cfg, unsupportedValueError("--list", value, listModes)
+			scopes, err := parseScopeList(value, listModes, "--list")
+			if err != nil {
+				return cfg, err
 			}
-			cfg.ListMode = value
+			cfg.ListMode = strings.Join(scopes, ",")
 			cfg.ListExplicit = true
 			i = next
 		case "--commands":
@@ -189,8 +192,19 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 			cfg.DestHost = host
 			i = next
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				cfg.DestAuth = args[i+1]
-				i++
+				if scopes, parseErr := parseScopeList(args[i+1], destModes, "--dest"); parseErr == nil {
+					cfg.DestScope = strings.Join(scopes, ",")
+					i++
+				} else {
+					cfg.DestAuth = args[i+1]
+					i++
+					if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+						if scopes, parseErr := parseScopeList(args[i+1], destModes, "--dest"); parseErr == nil {
+							cfg.DestScope = strings.Join(scopes, ",")
+							i++
+						}
+					}
+				}
 			}
 		case "-p", "--port":
 			value, next, err := nextArg(args, i, arg)
@@ -205,6 +219,8 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 			i = next
 		case "--force":
 			cfg.Force = true
+		case "-y", "--yes":
+			cfg.AutoYes = true
 		case "--log":
 			level, next, err := nextArg(args, i, arg)
 			if err != nil {
@@ -339,6 +355,9 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 	if cfg.Force && cfg.DestHost == "" {
 		return cfg, errors.New("--force can be used only together with --dest")
 	}
+	if cfg.AutoYes && cfg.DestHost == "" {
+		return cfg, errors.New("-y, --yes can be used only together with --dest")
+	}
 	if cfg.CopyConfigs && cfg.DestHost == "" {
 		return cfg, errors.New("--copy-configs can be used only together with --dest")
 	}
@@ -443,8 +462,9 @@ func readMyCNFPassword(path string) (string, error) {
 }
 
 func defaultExportScope(listMode string) string {
-	if contains(listModes, listMode) && listMode != "all" {
-		return listMode
+	scopes := configuredScopeList(listMode, listModes)
+	if len(scopes) == 1 && scopes[0] != "all" {
+		return scopes[0]
 	}
 	return "data"
 }

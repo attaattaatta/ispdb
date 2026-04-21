@@ -208,39 +208,194 @@ func renderPlainRows(rows [][]string) string {
 }
 
 func commandSectionText(groups []CommandGroup, colorize bool, withHeader bool) string {
+	return commandSectionTextWithHeader(groups, colorize, withHeader, "commands to run at remote server:")
+}
+
+func commandSectionTextWithHeader(groups []CommandGroup, colorize bool, withHeader bool, header string) string {
+	return commandSectionTextWithOptions(groups, colorize, withHeader, header, false)
+}
+
+func commandSectionTextWithOptions(groups []CommandGroup, colorize bool, withHeader bool, header string, annotateDeletes bool) string {
 	if len(groups) == 0 {
 		if withHeader {
-			return formatTitle("commands to run at remote server:", colorize) + "\n\nNo commands could be generated."
+			return renderCommandHeader(header, colorize, false) + "\n\nNo commands could be generated."
 		}
 		return "No commands could be generated."
 	}
 
 	var builder strings.Builder
+	hasDeleteCommands := annotateDeletes && groupsHaveDeleteCommands(groups)
 	if withHeader {
-		builder.WriteString(formatTitle("commands to run at remote server:", colorize))
+		builder.WriteString(renderCommandHeader(header, colorize, hasDeleteCommands))
 		builder.WriteString("\n\n")
 	}
-	for i, group := range groups {
+	filteredGroups, hasPackageGroup := splitCommandGroupsForRender(groups)
+	if hasPackageGroup {
+		builder.WriteString(featureUpdateCommand())
+		builder.WriteString("\n\n")
+	}
+	for i, group := range filteredGroups {
 		if i > 0 {
 			builder.WriteString("\n\n")
 		}
-		title := group.Title + ":"
-		if colorize {
-			if strings.HasPrefix(group.Title, "packages (") {
-				title = "# " + group.Title
-			} else {
-				title = "# " + title
-			}
-		}
-		if colorize {
-			builder.WriteString(formatTitle(title, true))
-		} else {
-			builder.WriteString(title)
-		}
+		builder.WriteString(renderCommandGroupTitle(group, colorize, annotateDeletes))
 		builder.WriteByte('\n')
-		builder.WriteString(strings.Join(group.Commands, "\n"))
+		builder.WriteString(renderCommandList(group.Commands, colorize))
 	}
 	return builder.String()
+}
+
+func noSyncCommandsText() string {
+	return "No differences were found. Nothing to sync."
+}
+
+func renderCommandHeader(header string, colorize bool, hasDeleteCommands bool) string {
+	if !isSyncCommandHeader(header) {
+		return formatTitle(header, colorize)
+	}
+
+	title := syncCommandTitle(header)
+	width := len([]rune(title))
+	if width < 48 {
+		width = 48
+	}
+	separator := "# " + strings.Repeat("=", width)
+	center := "# " + title
+
+	lines := []string{separator, center}
+	if hasDeleteCommands {
+		lines = append(lines, "# WARNING: SOME COMMANDS ARE DELETE / UNINSTALL")
+	}
+	lines = append(lines, separator)
+	if !colorize {
+		return strings.Join(lines, "\n")
+	}
+
+	for i, line := range lines {
+		if strings.Contains(line, "WARNING: SOME COMMANDS ARE DELETE / UNINSTALL") {
+			lines[i] = formatTitle("#", true) + colorRed + " WARNING: SOME COMMANDS ARE DELETE / UNINSTALL" + colorReset
+			continue
+		}
+		lines[i] = formatTitle(line, true)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func isSyncCommandHeader(header string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(header)), "sync ")
+}
+
+func syncCommandTitle(header string) string {
+	switch strings.ToLower(strings.TrimSuffix(strings.TrimSpace(header), ":")) {
+	case "sync remote with local":
+		return "TO SYNC REMOTE WITH LOCAL (RUN IT REMOTELY)"
+	case "sync local with remote":
+		return "TO SYNC LOCAL WITH REMOTE  (RUN IT LOCALLY)"
+	default:
+		return strings.ToUpper(strings.TrimSuffix(strings.TrimSpace(header), ":"))
+	}
+}
+
+func renderCommandGroupTitle(group CommandGroup, colorize bool, annotateDeletes bool) string {
+	title := group.Title + ":"
+	if !colorize {
+		return title
+	}
+
+	isPackageGroup := strings.HasPrefix(group.Title, "packages (")
+	if isPackageGroup {
+		if annotateDeletes && groupHasDeleteCommands(group) && strings.HasSuffix(group.Title, ")") {
+			base := "# " + strings.TrimSuffix(group.Title, ")")
+			return formatTitle(base, true) +
+				formatTitle(",", true) +
+				colorRed + " some delete / remove commands exists" + colorReset +
+				formatTitle(")", true)
+		}
+		return formatTitle("# "+group.Title, true)
+	}
+	return formatTitle("# "+title, true)
+}
+
+func groupsHaveDeleteCommands(groups []CommandGroup) bool {
+	for _, group := range groups {
+		if groupHasDeleteCommands(group) {
+			return true
+		}
+	}
+	return false
+}
+
+func groupHasDeleteCommands(group CommandGroup) bool {
+	for _, command := range group.Commands {
+		if commandHasDeleteAction(command) {
+			return true
+		}
+	}
+	return false
+}
+
+func commandHasDeleteAction(command string) bool {
+	fields, err := splitShellWords(command)
+	if err != nil {
+		fields = strings.Fields(command)
+	}
+	for _, field := range fields {
+		normalized := strings.ToLower(strings.Trim(field, "\"'"))
+		if normalized == "upgradesystem=off" {
+			continue
+		}
+		if strings.HasSuffix(normalized, "=off") || strings.HasSuffix(normalized, "=turn_off") {
+			return true
+		}
+	}
+	return false
+}
+
+func splitCommandGroupsForRender(groups []CommandGroup) ([]CommandGroup, bool) {
+	filtered := make([]CommandGroup, 0, len(groups))
+	hasPackageGroup := false
+
+	for _, group := range groups {
+		if strings.HasPrefix(group.Title, "packages (") {
+			hasPackageGroup = true
+		}
+		filtered = append(filtered, group)
+	}
+
+	return filtered, hasPackageGroup
+}
+
+func renderCommandList(commands []string, console bool) string {
+	if len(commands) == 0 {
+		return ""
+	}
+	if !console {
+		return strings.Join(commands, "\n")
+	}
+
+	var builder strings.Builder
+	for i, command := range commands {
+		if i > 0 {
+			if isLongConsoleCommand(commands[i-1]) || isLongConsoleCommand(command) {
+				builder.WriteString("\n\n")
+			} else {
+				builder.WriteByte('\n')
+			}
+		}
+		builder.WriteString(command)
+	}
+	return builder.String()
+}
+
+func isLongConsoleCommand(command string) bool {
+	fields, err := splitShellWords(command)
+	if err != nil {
+		return len(strings.Fields(command)) > 6
+	}
+	if len(fields) >= 4 && fields[0] == "/usr/local/mgr5/sbin/mgrctl" && fields[1] == "-m" && fields[2] == "ispmgr" {
+		return len(fields[4:]) > 5
+	}
+	return len(fields) > 6
 }
 
 func formatTitle(value string, colorize bool) string {

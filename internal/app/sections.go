@@ -1,127 +1,125 @@
 package app
 
 func (s SourceData) sections(mode string) []Section {
+	return s.sectionsForScopes(dataScopesFromListMode(mode))
+}
+
+func (s SourceData) sectionsForScopes(scopes []string) []Section {
+	if len(scopes) == 0 {
+		scopes = append([]string{}, dataScopeOrder...)
+	}
+
 	sections := make([]Section, 0, 10)
-	include := func(group string) bool {
-		return mode == "all" || mode == group
+	seen := map[string]struct{}{}
+	appendUnique := func(section Section) {
+		if _, ok := seen[section.Title]; ok {
+			return
+		}
+		seen[section.Title] = struct{}{}
+		sections = append(sections, section)
 	}
 
-	if include("packages") {
-		sections = append(sections, Section{
-			Title:        "packages",
-			Headers:      []string{"id", "name"},
-			Rows:         packageRows(s.Packages),
-			EmptyMessage: "No packages were found.",
-		})
-	}
-
-	if include("users") {
-		ftpRowsData := ftpRows(s.FTPUsers)
-		ftpSubtitle := ""
-		if !s.PrivateKeyUsed && len(ftpRowsData) > 0 {
-			ftpSubtitle = "Passwords for FTP users are not decrypted because no ispmgr.pem key was provided. See --key option."
-		}
-		dbUserRowsData := dbUserRows(s.DBUsers)
-		dbUsersSubtitle := ""
-		if !s.PrivateKeyUsed && len(dbUserRowsData) > 0 {
-			dbUsersSubtitle = "Passwords for DB users are not decrypted because no ispmgr.pem key was provided. See --key option."
-		}
-		sections = append(sections,
-			Section{
+	for _, scope := range scopes {
+		switch scope {
+		case "packages":
+			appendUnique(Section{
+				Title:        "packages",
+				Headers:      []string{"id", "name"},
+				Rows:         packageRows(s.Packages),
+				EmptyMessage: "No packages were found.",
+			})
+		case "users":
+			ftpRowsData := ftpRows(s.FTPUsers)
+			ftpSubtitle := ""
+			if !s.PrivateKeyUsed && len(ftpRowsData) > 0 {
+				ftpSubtitle = "Passwords for FTP users are not decrypted because no ispmgr.pem key was provided. See --key option."
+			}
+			dbUserRowsData := dbUserRows(s.DBUsers)
+			dbUsersSubtitle := ""
+			if !s.PrivateKeyUsed && len(dbUserRowsData) > 0 {
+				dbUsersSubtitle = "Passwords for DB users are not decrypted because no ispmgr.pem key was provided. See --key option."
+			}
+			appendUnique(Section{
 				Title:        "users",
 				Headers:      []string{"id", "name", "active", "safepasswd", "level", "home", "fullname", "uid", "gid", "shell", "tag", "create_time", "comment", "backup", "backup_type", "backup_size_limit"},
 				Rows:         userRows(s.Users),
 				EmptyMessage: "No users were found.",
-			},
-			Section{
+			})
+			appendUnique(Section{
 				Title:        "ftp users",
 				Subtitle:     ftpSubtitle,
 				Headers:      []string{"id", "name", "active", "enabled", "home", "password", "owner"},
 				Rows:         ftpRowsData,
 				EmptyMessage: "No FTP users were found.",
-			},
-			Section{
+			})
+			appendUnique(Section{
 				Title:        "db users",
 				Subtitle:     dbUsersSubtitle,
 				Headers:      []string{"id", "name", "password", "db_server"},
 				Rows:         dbUserRowsData,
 				EmptyMessage: "No database users were found.",
-			},
-		)
-	}
-
-	if include("webdomains") {
-		sections = append(sections, Section{
-			Title:        "web domains",
-			Headers:      []string{"id", "name", "name_idn", "aliases", "docroot", "secure", "ssl_cert", "autosubdomain", "php_mode", "php_version", "active", "owner", "ipaddr", "redirect_http"},
-			Rows:         webRows(s.WebDomains),
-			EmptyMessage: "No web domains were found.",
-		})
-	}
-
-	if include("databases") {
-		dbServerRowsData := dbServerRows(s.DBServers)
-		dbUserRowsData := dbUserRows(s.DBUsers)
-		dbSubtitle := ""
-		if !s.PrivateKeyUsed && (len(dbServerRowsData) > 0 || len(dbUserRowsData) > 0) {
-			dbSubtitle = "Passwords are not decrypted because no ispmgr.pem key was provided. See --key option."
-		}
-		sections = append(sections,
-			Section{
+			})
+		case "webdomains":
+			appendUnique(Section{
+				Title:        "web domains",
+				Headers:      []string{"id", "name", "name_idn", "aliases", "docroot", "secure", "ssl_cert", "autosubdomain", "php_mode", "php_version", "active", "owner", "ipaddr", "redirect_http"},
+				Rows:         webRows(s.WebDomains),
+				EmptyMessage: "No web domains were found.",
+			})
+		case "databases":
+			dbServerRowsData := dbServerRows(s.DBServers)
+			dbUserRowsData := dbUserRows(s.DBUsers)
+			dbSubtitle := ""
+			if !s.PrivateKeyUsed && (len(dbServerRowsData) > 0 || len(dbUserRowsData) > 0) {
+				dbSubtitle = "Passwords are not decrypted because no ispmgr.pem key was provided. See --key option."
+			}
+			appendUnique(Section{
 				Title:        "database servers",
 				Subtitle:     dbSubtitle,
 				Headers:      []string{"id", "name", "type", "host", "username", "password", "remote_access", "savedver"},
 				Rows:         dbServerRowsData,
 				EmptyMessage: "No database servers were found.",
-			},
-			Section{
+			})
+			appendUnique(Section{
 				Title:        "databases",
 				Headers:      []string{"id", "name", "unaccounted", "owner", "db_server"},
 				Rows:         databaseRows(s.Databases),
 				EmptyMessage: "No databases were found.",
-			},
-		)
-		if mode == "databases" {
-			sections = append(sections, Section{
+			})
+			appendUnique(Section{
 				Title:        "db users",
 				Subtitle:     dbSubtitle,
 				Headers:      []string{"id", "name", "password", "db_server"},
 				Rows:         dbUserRowsData,
 				EmptyMessage: "No database users were found.",
 			})
-		}
-	}
-
-	if include("email") {
-		emailBoxRowsData := emailBoxRows(s.EmailBoxes)
-		emailSubtitle := ""
-		if !s.PrivateKeyUsed && len(emailBoxRowsData) > 0 {
-			emailSubtitle = "Mailbox passwords are not decrypted because no ispmgr.pem key was provided. See --key option."
-		}
-		sections = append(sections,
-			Section{
+		case "email":
+			emailBoxRowsData := emailBoxRows(s.EmailBoxes)
+			emailSubtitle := ""
+			if !s.PrivateKeyUsed && len(emailBoxRowsData) > 0 {
+				emailSubtitle = "Mailbox passwords are not decrypted because no ispmgr.pem key was provided. See --key option."
+			}
+			appendUnique(Section{
 				Title:        "email domains",
 				Headers:      []string{"id", "name", "name_idn", "ip", "active", "owner"},
 				Rows:         emailDomainRows(s.EmailDomains),
 				EmptyMessage: "No email domains were found.",
-			},
-			Section{
+			})
+			appendUnique(Section{
 				Title:        "email boxes",
 				Subtitle:     emailSubtitle,
 				Headers:      []string{"id", "name", "domain", "password", "path", "active", "maxsize", "used", "note"},
 				Rows:         emailBoxRowsData,
 				EmptyMessage: "No email boxes were found.",
-			},
-		)
-	}
-
-	if include("dns") {
-		sections = append(sections, Section{
-			Title:        "dns",
-			Headers:      []string{"id", "name", "name_idn", "owner", "dtype"},
-			Rows:         dnsRows(s.DNSDomains),
-			EmptyMessage: "No DNS zones were found.",
-		})
+			})
+		case "dns":
+			appendUnique(Section{
+				Title:        "dns",
+				Headers:      []string{"id", "name", "name_idn", "owner", "dtype"},
+				Rows:         dnsRows(s.DNSDomains),
+				EmptyMessage: "No DNS zones were found.",
+			})
+		}
 	}
 
 	return sections

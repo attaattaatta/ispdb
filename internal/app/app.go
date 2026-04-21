@@ -6,8 +6,57 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 )
+
+var (
+	ensureRootHook        = ensureRoot
+	ensureLinuxHook       = ensureLinux
+	acquireLockHook       = acquireLock
+	userHomeDirHook       = os.UserHomeDir
+	askYesNoWithColorHook = askYesNoWithColor
+	runRemoteWorkflowHook = runRemoteWorkflow
+	runRemoteWorkflowWithRunnerHook = runRemoteWorkflowWithRunner
+	buildRemoteExecutionPreviewHook = func(a *App, ctx context.Context, data SourceData, commandScopes []string) (remoteExecutionPreview, error) {
+		return a.buildRemoteExecutionPreview(ctx, data, commandScopes)
+	}
+)
+
+func CheckRootPreflight() error {
+	return ensureRootHook()
+}
+
+func RequiresRootForArgs(args []string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "-h", "--help":
+			return false
+		case "-v", "--version", "-f", "--file", "-d", "--dest":
+			return false
+		}
+	}
+	return true
+}
+
+func RequiresRootForConfig(cfg Config) bool {
+	if cfg.ShowHelp || cfg.ShowVersion {
+		return false
+	}
+	return strings.TrimSpace(cfg.DBFile) == ""
+}
+
+func defaultLockPath() (string, error) {
+	home, err := userHomeDirHook()
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve user home directory for lock file: %w", err)
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", fmt.Errorf("failed to resolve user home directory for lock file: empty home path")
+	}
+	return filepath.Join(home, ".ispdb", "ispdb.lock"), nil
+}
 
 type App struct {
 	cfg        Config
@@ -18,6 +67,11 @@ type App struct {
 	version    string
 	lockFile   *os.File
 	binaryName string
+}
+
+type remoteExecutionPreview struct {
+	groups []CommandGroup
+	runner *remoteRunner
 }
 
 func New(cfg Config, version string, artFS embed.FS, binaryName string) (*App, error) {
@@ -47,6 +101,13 @@ func (a *App) Run() error {
 		defer a.logCloser.Close()
 	}
 
+	requiresRoot := RequiresRootForConfig(a.cfg)
+	if requiresRoot {
+		if err := ensureRootHook(); err != nil {
+			return err
+		}
+	}
+
 	if a.cfg.MemeMode {
 		a.ui.PrintASCII(a.arts)
 		return nil
@@ -57,7 +118,7 @@ func (a *App) Run() error {
 		return nil
 	}
 
-	if err := ensureLinux(); err != nil {
+	if err := ensureLinuxHook(); err != nil {
 		return err
 	}
 
@@ -76,26 +137,31 @@ func (a *App) Run() error {
 		return nil
 	}
 
-	if err := ensureRoot(); err != nil {
-		return err
-	}
-
-	lockFile, err := acquireLock(defaultLock)
-	if err != nil {
-		return err
-	}
-	a.lockFile = lockFile
-	defer func() {
-		if a.lockFile != nil {
-			_ = a.lockFile.Close()
+	if requiresRoot {
+		lockPath, err := defaultLockPath()
+		if err != nil {
+			return err
 		}
-	}()
+		lockFile, err := acquireLockHook(lockPath)
+		if err != nil {
+			return err
+		}
+		a.lockFile = lockFile
+		defer func() {
+			if a.lockFile != nil {
+				_ = a.lockFile.Close()
+			}
+		}()
+	}
 
 	if a.cfg.BulkMode != "" {
 		return runBulkWorkflow(a.ui, a.cfg)
 	}
 
 	ctx := context.Background()
+	if a.shouldRunRemoteList() {
+		return runRemoteListWorkflow(ctx, a.ui, a.logger, a.cfg)
+	}
 	raw, err := loadSource(ctx, a.cfg)
 	if err != nil {
 		return fmt.Errorf("%s%s%s", colorRed, a.formatLoadSourceError(err), colorReset)
@@ -112,6 +178,7 @@ func (a *App) Run() error {
 	data.SourcePath = a.cfg.DBDisplay
 
 	showDataConsole := a.cfg.DestHost == "" && a.cfg.ExportFile == ""
+	listScopes := displayScopesFromListMode(a.cfg.ListMode)
 	if showDataConsole {
 		if !suppressMetaOutput {
 			a.printLoadedSource(backupPath, data)
@@ -124,7 +191,7 @@ func (a *App) Run() error {
 		}
 	}
 
-	allSections := data.sections(a.cfg.ListMode)
+	allSections := data.sectionsForScopes(dataScopesFromListMode(a.cfg.ListMode))
 	sections := allSections
 	listColumns := a.cfg.Columns
 	if len(listColumns) > 0 {
@@ -142,27 +209,25 @@ func (a *App) Run() error {
 	needCommands := a.cfg.DestHost != "" ||
 		a.cfg.ExportScope == "commands" ||
 		(a.cfg.ExportFile != "" && a.cfg.ExportScope == "all") ||
-		a.cfg.ListMode == "commands" ||
-		(a.cfg.ListMode == "all" && a.cfg.ListExplicit) ||
+		hasScope(configuredScopeList(a.cfg.ListMode, listModes), "commands") ||
+		(hasScope(configuredScopeList(a.cfg.ListMode, listModes), "all") && a.cfg.ListExplicit) ||
 		a.cfg.DevMode
 
-	commandScope := a.cfg.ListMode
-	if commandScope == "" || commandScope == "commands" {
-		commandScope = "all"
+	commandScopes := commandScopesFromListMode(a.cfg.ListMode)
+	if a.cfg.DestHost != "" && strings.TrimSpace(a.cfg.DestScope) != "" {
+		commandScopes = destScopesFromValue(a.cfg.DestScope)
 	}
 
 	var commandGroups []CommandGroup
 	var commands []string
 	var commandWarnings []string
-	consoleCommandText := ""
 	if needCommands {
-		commandGroups, commandWarnings = buildCommands(data, commandScope, CommandBuildOptions{
+		commandGroups, commandWarnings = buildCommandsForScopes(data, commandScopes, CommandBuildOptions{
 			DefaultIP: detectLocalIPv4(),
 			DefaultNS: defaultNameservers,
 			TargetOS:  detectLocalOSName(),
 		})
 		commands = flattenCommandGroups(commandGroups)
-		consoleCommandText = commandSectionText(commandGroups, true, true)
 	}
 
 	for _, warning := range commandWarnings {
@@ -180,20 +245,33 @@ func (a *App) Run() error {
 	}
 
 	if showDataConsole && a.cfg.ListMode != "" {
-		if a.cfg.ListMode != "commands" && strings.TrimSpace(consoleDataText) != "" {
-			a.ui.Println(consoleDataText)
-		}
-		if a.cfg.ListMode == "commands" || (a.cfg.ListMode == "all" && a.cfg.ListExplicit) {
-			if a.cfg.ListMode != "commands" && strings.TrimSpace(consoleDataText) != "" {
-				a.ui.Println("")
-				a.ui.Println("")
+		orderedOutput := a.renderOrderedListOutput(data, listScopes, commandGroups)
+		if strings.TrimSpace(orderedOutput) == "" {
+			if strings.TrimSpace(consoleDataText) != "" {
+				a.ui.Println(consoleDataText)
 			}
-			a.ui.Println(consoleCommandText)
+		} else {
+			a.ui.Println(orderedOutput)
 		}
 	}
 
 	if a.cfg.DestHost != "" {
-		if err := runRemoteWorkflow(ctx, a.ui, a.logger, a.cfg, data, commands); err != nil {
+		if !a.cfg.AutoYes {
+			preview, err := buildRemoteExecutionPreviewHook(a, ctx, data, commandScopes)
+			if err != nil {
+				return err
+			}
+			if err := a.confirmRemoteExecution(preview.groups); err != nil {
+				if preview.runner != nil {
+					_ = preview.runner.Close()
+				}
+				return err
+			}
+			if preview.runner != nil {
+				return runRemoteWorkflowWithRunnerHook(ctx, preview.runner, data, commands)
+			}
+		}
+		if err := runRemoteWorkflowHook(ctx, a.ui, a.logger, a.cfg, data, commands); err != nil {
 			return err
 		}
 	}
@@ -274,6 +352,108 @@ func (a *App) printBanner() {
 
 func (a *App) shouldSuppressMetaOutput() bool {
 	return a.cfg.CleanOutput && a.cfg.DestHost == "" && a.cfg.ExportFile == "" && a.cfg.ListMode != ""
+}
+
+func (a *App) shouldRunRemoteList() bool {
+	return a.cfg.DestHost != "" && a.cfg.ListExplicit
+}
+
+func (a *App) renderOrderedListOutput(data SourceData, scopes []string, commandGroups []CommandGroup) string {
+	if len(scopes) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		switch scope {
+		case "commands":
+			if len(commandGroups) == 0 {
+				parts = append(parts, noSyncCommandsText())
+				continue
+			}
+			parts = append(parts, commandSectionTextWithOptions(commandGroups, true, true, "commands to run at remote server:", true))
+		default:
+			sections := data.sectionsForScopes([]string{scope})
+			if len(a.cfg.Columns) > 0 {
+				filtered, err := filterSectionsByColumns(sections, a.cfg.Columns)
+				if err == nil {
+					sections = filtered
+				}
+			}
+			if len(sections) == 0 {
+				continue
+			}
+			if a.cfg.CleanOutput && canUseCleanOutput(sections) {
+				parts = append(parts, renderCleanSections(sections))
+			} else {
+				parts = append(parts, renderSections(sections, true))
+			}
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func (a *App) confirmRemoteExecution(commandGroups []CommandGroup) error {
+	if len(commandGroups) > 0 {
+		a.ui.Println(commandSectionText(commandGroups, true, true))
+		a.ui.Println("")
+	}
+	answer, err := askYesNoWithColorHook("Continue with remote sync?", true, colorYellow)
+	if err != nil {
+		return err
+	}
+	if !answer {
+		return fmt.Errorf("%sdestination execution was cancelled by user%s", colorRed, colorReset)
+	}
+	return nil
+}
+
+func (a *App) buildRemoteExecutionPreview(ctx context.Context, data SourceData, commandScopes []string) (remoteExecutionPreview, error) {
+	runner, err := connectRemoteRunner(a.ui, a.logger, a.cfg, true)
+	if err != nil {
+		return remoteExecutionPreview{}, err
+	}
+	if err := runner.ensureDestinationRoot(ctx); err != nil {
+		_ = runner.Close()
+		return remoteExecutionPreview{}, err
+	}
+
+	state := remotePreviewState{}
+	if primaryIP, err := runner.primaryIPAddress(ctx); err == nil {
+		state.primaryIP = primaryIP
+	}
+
+	panelInstalled, err := runner.panelInstalled(ctx)
+	if err != nil {
+		_ = runner.Close()
+		return remoteExecutionPreview{}, err
+	}
+	if panelInstalled {
+		info, err := runner.licenseInfo(ctx)
+		if err != nil {
+			_ = runner.Close()
+			return remoteExecutionPreview{}, err
+		}
+		state.targetOS = info["os"]
+		state.targetPanel = info["panel_name"]
+
+		records, err := runner.featureRecords(ctx)
+		if err != nil {
+			_ = runner.Close()
+			return remoteExecutionPreview{}, err
+		}
+		state.currentPackages = installedPackagesFromFeatures(records, state.targetOS)
+
+		inventory, err := runner.loadRemoteInventory(ctx)
+		if err != nil {
+			_ = runner.Close()
+			return remoteExecutionPreview{}, err
+		}
+		state.inventory = inventory
+	}
+
+	groups, _ := buildRemoteExecutionPreviewGroups(data, commandScopes, a.cfg, state)
+	return remoteExecutionPreview{groups: groups, runner: runner}, nil
 }
 
 func (a *App) printLoadedSource(backupPath string, data SourceData) {

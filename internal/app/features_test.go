@@ -63,14 +63,14 @@ func TestBuildPackageCommandGroups(t *testing.T) {
 
 	joined := strings.Join(flattenCommandGroups(groups), "\n")
 	for _, want := range []string{
-		"feature.update sok=ok updatesystem=on upgradesystem=off upgradewarning_msg=",
 		"package_nginx=on",
 		"package_logrotate=on",
 		"packagegroup_mysql=mariadb-server",
 		"package_dovecot=on",
 		"package_opendkim=on",
-		"packagegroup_altphp72gr=ispphp72",
-		"package_ispphp72_lsapi=on",
+		"feature.resume",
+		"'elid=altphp72'",
+		"'elname=PHP 7.2 Apache module, PHP 7.2 PHP-FPM, PHP 7.2 common'",
 		"package_fail2ban=on",
 		"package_wireguard=on",
 		"package_docker=on",
@@ -104,34 +104,30 @@ func TestBuildPackageCommandGroups(t *testing.T) {
 		t.Fatalf("package commands must not contain out=devel anymore\n%s", joined)
 	}
 
-	othersIndex := -1
 	altPHPIndex := -1
+	seenOthers := map[string]bool{}
 	for index, group := range groups {
 		if group.Title == "packages (altphp)" {
 			altPHPIndex = index
-			if len(group.Commands) < 2 {
-				t.Fatalf("expected combined altphp group to contain update and commands, got %#v", group)
-			}
-			if group.Commands[0] != featureUpdateCommand() {
-				t.Fatalf("expected first altphp command to be feature.update, got %q", group.Commands[0])
+			if len(group.Commands) < 1 {
+				t.Fatalf("expected combined altphp group to contain at least one command, got %#v", group)
 			}
 		}
-		if group.Title == "packages (others)" {
-			othersIndex = index
-			if len(group.Commands) < 2 {
-				t.Fatalf("expected combined others group to contain update and commands, got %#v", group)
+		switch group.Title {
+		case "packages (fail2ban)", "packages (wireguard)", "packages (docker)", "packages (python)":
+			seenOthers[group.Title] = true
+			if len(group.Commands) != 1 {
+				t.Fatalf("expected standalone other package group to contain one command, got %#v", group)
 			}
-			if group.Commands[0] != featureUpdateCommand() {
-				t.Fatalf("expected first others command to be feature.update, got %q", group.Commands[0])
-			}
-			break
 		}
-	}
-	if othersIndex == -1 {
-		t.Fatalf("expected packages (others) group, got %#v", groups)
 	}
 	if altPHPIndex == -1 {
 		t.Fatalf("expected packages (altphp) group, got %#v", groups)
+	}
+	for _, title := range []string{"packages (fail2ban)", "packages (wireguard)", "packages (docker)", "packages (python)"} {
+		if !seenOthers[title] {
+			t.Fatalf("expected standalone group %s, got %#v", title, groups)
+		}
 	}
 }
 
@@ -147,6 +143,265 @@ func TestBuildPackageCommandGroupsSkipsEmptyDNSGroup(t *testing.T) {
 	for _, group := range groups {
 		if group.Title == "packages (dns)" {
 			t.Fatalf("did not expect dns package group when source has no dns packages: %#v", groups)
+		}
+	}
+}
+
+func TestBuildPackageSyncStepsCombinesAltPHPVersionsIntoSingleStep(t *testing.T) {
+	t.Parallel()
+
+	steps, warnings := buildPackageSyncSteps(
+		[]Package{
+			{ID: "1", Name: "ispphp72"},
+			{ID: "2", Name: "ispphp72_lsapi"},
+			{ID: "3", Name: "ispphp83"},
+			{ID: "4", Name: "ispphp83_lsapi"},
+		},
+		map[string]struct{}{},
+		packagePlanOptions{
+			TargetOS:      "Ubuntu 24.04",
+			TargetPanel:   "ispmanager Host",
+			SkipSatisfied: true,
+		},
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	altPHPCount := 0
+	var altPHPStep packageSyncStep
+	for _, step := range steps {
+		if step.Title == "packages (altphp)" {
+			altPHPCount++
+			altPHPStep = step
+		}
+	}
+	if altPHPCount != 1 {
+		t.Fatalf("expected exactly one combined altphp step, got %d: %#v", altPHPCount, steps)
+	}
+	if !strings.Contains(altPHPStep.Command, "feature.resume") {
+		t.Fatalf("expected combined altphp command to use feature.resume, got %q", altPHPStep.Command)
+	}
+	if !strings.Contains(altPHPStep.Command, "'elid=altphp72, altphp83'") {
+		t.Fatalf("expected combined altphp command to contain both versions, got %q", altPHPStep.Command)
+	}
+	if !strings.Contains(altPHPStep.Command, "'elname=PHP 7.2 Apache module, PHP 7.2 PHP-FPM, PHP 7.2 common'") {
+		t.Fatalf("expected combined altphp command to contain quoted sample elname, got %q", altPHPStep.Command)
+	}
+}
+
+func TestBuildPackageSyncStepsUsesOnlyDifferingAltPHPVersions(t *testing.T) {
+	t.Parallel()
+
+	steps, warnings := buildPackageSyncSteps(
+		[]Package{
+			{ID: "1", Name: "ispphp72"},
+			{ID: "2", Name: "ispphp72_lsapi"},
+			{ID: "3", Name: "ispphp83"},
+			{ID: "4", Name: "ispphp83_lsapi"},
+		},
+		map[string]struct{}{
+			"ispphp72":       {},
+			"ispphp72_lsapi": {},
+			"ispphp84":       {},
+		},
+		packagePlanOptions{
+			TargetOS:      "Ubuntu 24.04",
+			TargetPanel:   "ispmanager Host",
+			SkipSatisfied: true,
+		},
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	var altPHPStep *packageSyncStep
+	for i := range steps {
+		if steps[i].Feature == "altphp" {
+			altPHPStep = &steps[i]
+			break
+		}
+	}
+	if altPHPStep == nil {
+		t.Fatalf("expected altphp step, got %#v", steps)
+	}
+	if strings.Contains(altPHPStep.Command, "altphp72") {
+		t.Fatalf("did not expect already matching altphp72 in diff command, got %q", altPHPStep.Command)
+	}
+	if !strings.Contains(altPHPStep.Command, "'elid=altphp83'") {
+		t.Fatalf("expected only missing altphp83 in diff command, got %q", altPHPStep.Command)
+	}
+	if strings.Contains(altPHPStep.Command, "altphp84") {
+		t.Fatalf("did not expect extra current altphp84 to appear in resume command, got %q", altPHPStep.Command)
+	}
+}
+
+func TestBuildPackageSyncStepsSkipsDNSGroupWhenAbsentOnSourceAndDestination(t *testing.T) {
+	t.Parallel()
+
+	steps, warnings := buildPackageSyncSteps(
+		[]Package{{ID: "1", Name: "nginx"}},
+		map[string]struct{}{"nginx": {}},
+		packagePlanOptions{
+			TargetOS:      "AlmaLinux 10",
+			TargetPanel:   "ispmanager Lite",
+			SkipSatisfied: true,
+		},
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	for _, step := range steps {
+		if step.Feature == "dns" {
+			t.Fatalf("did not expect dns sync step when dns packages are absent on both sides: %#v", steps)
+		}
+	}
+}
+
+func TestBuildPackageSyncStepsDoesNotSkipWebGroupWhenDestinationHasExtraPackages(t *testing.T) {
+	t.Parallel()
+
+	steps, warnings := buildPackageSyncSteps(
+		[]Package{
+			{ID: "1", Name: "nginx"},
+			{ID: "2", Name: "php"},
+		},
+		map[string]struct{}{
+			"nginx":      {},
+			"php":        {},
+			"logrotate":  {},
+			"apache-itk": {},
+		},
+		packagePlanOptions{
+			TargetOS:      "AlmaLinux 9",
+			TargetPanel:   "ispmanager Lite",
+			SkipSatisfied: true,
+		},
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	for _, step := range steps {
+		if step.Feature == "web" {
+			return
+		}
+	}
+	t.Fatalf("expected web step to remain when destination has extra web packages, got %#v", steps)
+}
+
+func TestBuildPackageSyncStepsUsesOnlyDifferingArgsForWebGroup(t *testing.T) {
+	t.Parallel()
+
+	steps, warnings := buildPackageSyncSteps(
+		[]Package{
+			{ID: "1", Name: "nginx"},
+			{ID: "2", Name: "php"},
+		},
+		map[string]struct{}{
+			"nginx":      {},
+			"php":        {},
+			"logrotate":  {},
+			"apache-itk": {},
+		},
+		packagePlanOptions{
+			TargetOS:      "AlmaLinux 9",
+			TargetPanel:   "ispmanager Lite",
+			SkipSatisfied: true,
+		},
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	var webStep *packageSyncStep
+	for i := range steps {
+		if steps[i].Feature == "web" {
+			webStep = &steps[i]
+			break
+		}
+	}
+	if webStep == nil {
+		t.Fatalf("expected web step, got %#v", steps)
+	}
+
+	command := webStep.Command
+	for _, want := range []string{
+		"packagegroup_apache=turn_off",
+		"package_logrotate=off",
+	} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("expected web diff command to contain %q, got %q", want, command)
+		}
+	}
+	for _, dontWant := range []string{
+		"package_nginx=on",
+		"package_php=on",
+		"package_php-fpm=",
+		"package_awstats=",
+		"package_phpcomposer=",
+	} {
+		if strings.Contains(command, dontWant) {
+			t.Fatalf("did not expect unchanged web arg %q in diff command %q", dontWant, command)
+		}
+	}
+}
+
+func TestBuildPackageSyncStepsAlwaysKeepsClamAVOffInEmailGroup(t *testing.T) {
+	t.Parallel()
+
+	steps, warnings := buildPackageSyncSteps(
+		[]Package{
+			{ID: "1", Name: "dovecot"},
+			{ID: "2", Name: "exim"},
+		},
+		map[string]struct{}{
+			"dovecot": {} ,
+		},
+		packagePlanOptions{
+			TargetOS:      "Ubuntu 24.04",
+			TargetPanel:   "ispmanager Lite",
+			SkipSatisfied: true,
+		},
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	var emailStep *packageSyncStep
+	for i := range steps {
+		if steps[i].Feature == "email" {
+			emailStep = &steps[i]
+			break
+		}
+	}
+	if emailStep == nil {
+		t.Fatalf("expected email step, got %#v", steps)
+	}
+	if !strings.Contains(emailStep.Command, "package_clamav=off") {
+		t.Fatalf("expected email command to always contain package_clamav=off, got %q", emailStep.Command)
+	}
+}
+
+func TestBuildPackageSyncStepsSkipsStandaloneFeatureWhenAlreadyMatching(t *testing.T) {
+	t.Parallel()
+
+	steps, warnings := buildPackageSyncSteps(
+		[]Package{{ID: "1", Name: "fail2ban"}},
+		map[string]struct{}{"fail2ban": {}},
+		packagePlanOptions{
+			TargetOS:      "Ubuntu 24.04",
+			TargetPanel:   "ispmanager Lite",
+			SkipSatisfied: true,
+		},
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	for _, step := range steps {
+		if step.Feature == "fail2ban" {
+			t.Fatalf("did not expect fail2ban step when destination already matches source: %#v", steps)
 		}
 	}
 }

@@ -15,8 +15,8 @@ func buildHelp(version string, binaryName string) string {
 	fmt.Fprintf(&builder, "If not provided, %s tries /usr/local/mgr5/etc/ispmgr.db first and then MySQL root@localhost:3306 using /root/.my.cnf.\n\n", sanitizeBinaryName(binaryName))
 	fmt.Fprintf(&builder, "-k, --key <ispmgr.pem>\n")
 	fmt.Fprintf(&builder, "Optional private key for passwords decryption.\n\n")
-	fmt.Fprintf(&builder, "--list [%s]\n", strings.Join(listModes, "|"))
-	fmt.Fprintf(&builder, "Show data in console.\n\n")
+	fmt.Fprintf(&builder, "-l, --list [%s]\n", strings.Join(listModes, "|"))
+	fmt.Fprintf(&builder, "Show local data in console. Comma-separated scopes are supported and displayed in the same order. Together with --dest it shows remote panel data for [%s].\n\n", strings.Join(destModes, "|"))
 	fmt.Fprintf(&builder, "-e, --export <file>\n")
 	fmt.Fprintf(&builder, "Write export to file.\n\n")
 	fmt.Fprintf(&builder, "--export-data [%s]\n", strings.Join(exportScopes, "|"))
@@ -29,10 +29,13 @@ func buildHelp(version string, binaryName string) string {
 	fmt.Fprintf(&builder, "Show or export only selected columns.\n\n")
 	fmt.Fprintf(&builder, "--clean\n")
 	fmt.Fprintf(&builder, "When --columns has one column, print or export only values without table borders and totals.\n\n")
-	fmt.Fprintf(&builder, "-d, --dest <ipv4> [root_password|root_key]\n")
-	fmt.Fprintf(&builder, "Connect to destination server over SSH as root and run generated ispmanager API commands.\n\n")
+	fmt.Fprintf(&builder, "-d, --dest <ipv4> [root_password|root_key] [%s]\n", strings.Join(destModes, "|"))
+	fmt.Fprintf(&builder, "Connect to destination server over SSH as root and run generated ispmanager API commands.\n")
+	fmt.Fprintf(&builder, "Optional trailing scope limits remote actions. Comma-separated scopes are supported and processed in the same order.\n\n")
 	fmt.Fprintf(&builder, "-p, --port <port>\n")
 	fmt.Fprintf(&builder, "SSH port for --dest (default: 22).\n\n")
+	fmt.Fprintf(&builder, "-y, --yes\n")
+	fmt.Fprintf(&builder, "Use only together with --dest. Answer yes to destination-side confirmation prompts without using --force.\n\n")
 	fmt.Fprintf(&builder, "--force\n")
 	fmt.Fprintf(&builder, "Use only together with --dest. Ignore ispmanager API errors and panel log errors, but do not ignore SSH failures or database parsing failures.\n\n")
 	fmt.Fprintf(&builder, "--overwrite\n")
@@ -79,6 +82,7 @@ func buildHelp(version string, binaryName string) string {
 				command,
 				command + " --list all",
 				command + " --list commands",
+				command + " --list dns,email",
 			},
 		},
 		{
@@ -98,13 +102,18 @@ func buildHelp(version string, binaryName string) string {
 		},
 		{
 			title:       "Remote Migration",
-			description: "Connect to a destination server over SSH and execute generated ispmanager API commands there.",
+			description: "Connect to a destination server over SSH, run selected migration scope there, or inspect remote panel data.",
 			commands: []string{
 				command + " -d 192.0.2.10 --force",
+				command + " -d 192.0.2.10 -y",
+				command + " -d 192.0.2.10 packages",
+				command + " -d 192.0.2.10 packages,users",
 				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10",
 				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 -p 2222",
 				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 /root/.ssh/id_ed25519 --force",
 				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem -d 192.0.2.10 --copy-configs",
+				command + " -d 192.0.2.10 --list packages",
+				command + " -d 192.0.2.10 --list packages,dns",
 			},
 		},
 		{

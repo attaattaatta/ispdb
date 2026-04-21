@@ -17,10 +17,15 @@ func buildSourceData(raw rawSource, keyPath string) (SourceData, error) {
 		PrivateKeyUsed: key != nil,
 	}
 
+	presetLimitsByKey := presetLimitProps(raw)
+	userLimitsByID := userLimitProps(raw)
+
 	userNames := map[string]string{}
 	for _, row := range raw.tables["users"] {
+		userID := rowValue(row, "id")
+		presetName := rowValue(row, "preset")
 		item := User{
-			ID:              rowValue(row, "id"),
+			ID:              userID,
 			Name:            rowValue(row, "name"),
 			Active:          rowValue(row, "active"),
 			SafePasswd:      rowValue(row, "safepasswd"),
@@ -36,6 +41,8 @@ func buildSourceData(raw rawSource, keyPath string) (SourceData, error) {
 			Backup:          rowValue(row, "backup"),
 			BackupType:      rowValue(row, "backup_type"),
 			BackupSizeLimit: rowValue(row, "backup_size_limit"),
+			Preset:          presetName,
+			LimitProps:      mergeLimitProps(presetLimitsByKey[userID+"::"+presetName], presetLimitsByKey["::"+presetName], userLimitsByID[userID]),
 		}
 		data.Users = append(data.Users, item)
 		userNames[item.ID] = item.Name
@@ -261,6 +268,85 @@ func buildSourceData(raw rawSource, keyPath string) (SourceData, error) {
 	}
 
 	return data, nil
+}
+
+func userLimitProps(raw rawSource) map[string]map[string]string {
+	result := map[string]map[string]string{}
+	for _, row := range raw.tables["userprops"] {
+		name := strings.TrimSpace(rowValue(row, "name"))
+		if !strings.HasPrefix(name, "limit_") {
+			continue
+		}
+		userID := rowValue(row, "users")
+		if userID == "" {
+			continue
+		}
+		if result[userID] == nil {
+			result[userID] = map[string]string{}
+		}
+		result[userID][name] = rowValue(row, "value")
+	}
+	return result
+}
+
+func presetLimitProps(raw rawSource) map[string]map[string]string {
+	presetIDs := map[string]string{}
+	for _, row := range raw.tables["preset"] {
+		name := strings.TrimSpace(rowValue(row, "name"))
+		if name == "" {
+			continue
+		}
+		key := rowValue(row, "users") + "::" + name
+		presetIDs[key] = rowValue(row, "id")
+		if rowValue(row, "users") == "" {
+			presetIDs["::"+name] = rowValue(row, "id")
+		}
+	}
+
+	propsByPresetID := map[string]map[string]string{}
+	for _, row := range raw.tables["preset_props"] {
+		name := strings.TrimSpace(rowValue(row, "name"))
+		if !strings.HasPrefix(name, "limit_") {
+			continue
+		}
+		presetID := rowValue(row, "preset")
+		if presetID == "" {
+			continue
+		}
+		if propsByPresetID[presetID] == nil {
+			propsByPresetID[presetID] = map[string]string{}
+		}
+		propsByPresetID[presetID][name] = rowValue(row, "value")
+	}
+
+	result := map[string]map[string]string{}
+	for key, presetID := range presetIDs {
+		if props := propsByPresetID[presetID]; len(props) > 0 {
+			result[key] = cloneStringMap(props)
+		}
+	}
+	return result
+}
+
+func mergeLimitProps(values ...map[string]string) map[string]string {
+	merged := map[string]string{}
+	for _, value := range values {
+		for key, item := range value {
+			merged[key] = item
+		}
+	}
+	return merged
+}
+
+func cloneStringMap(value map[string]string) map[string]string {
+	if len(value) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(value))
+	for key, item := range value {
+		clone[key] = item
+	}
+	return clone
 }
 
 func rowValue(row rawRow, key string) string {

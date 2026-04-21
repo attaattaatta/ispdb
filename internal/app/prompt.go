@@ -36,7 +36,13 @@ func askYesNoWithColor(question string, defaultNo bool, color string) (bool, err
 				return false, err
 			}
 			if byteBuf[0] == 3 {
-				os.Exit(130)
+				handleInterruptRequest()
+				buffer = buffer[:0]
+				continue
+			}
+			if byteBuf[0] == '\r' || byteBuf[0] == '\n' {
+				fmt.Print("\r\n")
+				return !defaultNo, nil
 			}
 			buffer = append(buffer, byteBuf[0])
 			if !utf8.FullRune(buffer) {
@@ -44,11 +50,11 @@ func askYesNoWithColor(question string, defaultNo bool, color string) (bool, err
 			}
 			r, _ := utf8.DecodeRune(buffer)
 			buffer = buffer[:0]
-			switch r {
-			case 'y', 'Y', '\u043d', '\u041d':
+			switch interpretYesNoRune(r, defaultNo) {
+			case yesNoAnswerYes:
 				fmt.Print("\r\n")
 				return true, nil
-			case 'n', 'N', '\u0442', '\u0422':
+			case yesNoAnswerNo:
 				fmt.Print("\r\n")
 				return false, nil
 			}
@@ -64,13 +70,37 @@ func askYesNoWithColor(question string, defaultNo bool, color string) (bool, err
 		return !defaultNo, nil
 	}
 	r, _ := utf8.DecodeRuneInString(text)
-	switch r {
-	case 'y', 'Y', '\u043d', '\u041d':
+	switch interpretYesNoRune(r, defaultNo) {
+	case yesNoAnswerYes:
 		return true, nil
-	case 'n', 'N', '\u0442', '\u0422':
+	case yesNoAnswerNo:
 		return false, nil
 	default:
 		return !defaultNo, nil
+	}
+}
+
+type yesNoAnswer int
+
+const (
+	yesNoAnswerUnknown yesNoAnswer = iota
+	yesNoAnswerYes
+	yesNoAnswerNo
+)
+
+func interpretYesNoRune(r rune, defaultNo bool) yesNoAnswer {
+	switch r {
+	case 'y', 'Y', '\u043d', '\u041d':
+		return yesNoAnswerYes
+	case 'n', 'N', '\u0442', '\u0422':
+		return yesNoAnswerNo
+	case '\r', '\n':
+		if defaultNo {
+			return yesNoAnswerNo
+		}
+		return yesNoAnswerYes
+	default:
+		return yesNoAnswerUnknown
 	}
 }
 

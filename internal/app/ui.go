@@ -42,28 +42,28 @@ func (u *UI) Info(text string) {
 	if u.silent {
 		return
 	}
-	fmt.Fprintln(u.out, highlightColon(text))
+	fmt.Fprintln(u.out, text)
 }
 
 func (u *UI) Success(text string) {
 	if u.silent {
 		return
 	}
-	fmt.Fprintf(u.out, "%s%s%s\n", colorGreen, text, colorReset)
+	fmt.Fprintln(u.out, colorizeStatusText(text, "OK", colorGreen))
 }
 
 func (u *UI) Warn(text string) {
 	if u.silent {
 		return
 	}
-	fmt.Fprintf(u.out, "%s%s%s\n", colorYellow, text, colorReset)
+	fmt.Fprintln(u.out, colorizeColonSuffix(text, colorYellow))
 }
 
 func (u *UI) Error(text string) {
 	if u.silent {
 		return
 	}
-	fmt.Fprintf(u.err, "%s%s%s\n", colorRed, text, colorReset)
+	fmt.Fprintln(u.err, colorizeColonSuffix(text, colorRed))
 }
 
 func (u *UI) PrintASCII(arts []string) {
@@ -76,10 +76,23 @@ func (u *UI) PrintASCII(arts []string) {
 	fmt.Fprintln(u.out, arts[u.rng.Intn(len(arts))])
 }
 
-func highlightColon(text string) string {
-	index := strings.Index(text, ":")
-	if index == -1 {
-		return colorGreen + text + colorReset
+func colorizeStatusText(text string, token string, color string) string {
+	suffix := ": " + token
+	if strings.HasSuffix(text, suffix) {
+		return strings.TrimSuffix(text, token) + color + token + colorReset
 	}
-	return colorGreen + text[:index+1] + colorReset + text[index+1:]
+	return colorizeColonSuffix(text, color)
+}
+
+func colorizeColonSuffix(text string, color string) string {
+	index := strings.LastIndex(text, ":")
+	if index < 0 || index+1 >= len(text) {
+		return text
+	}
+	prefix := text[:index+1]
+	suffix := strings.TrimLeft(text[index+1:], " ")
+	if suffix == "" {
+		return text
+	}
+	return prefix + " " + color + suffix + colorReset
 }

@@ -5,10 +5,20 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 )
 
 type multiHandler struct {
 	handlers []slog.Handler
+}
+
+type consoleSpacingHandler struct {
+	base slog.Handler
+	out  io.Writer
+}
+
+type colorizingLogWriter struct {
+	base io.Writer
 }
 
 func (m multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -47,12 +57,56 @@ func (m multiHandler) WithGroup(name string) slog.Handler {
 	return multiHandler{handlers: handlers}
 }
 
+func (h consoleSpacingHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.base.Enabled(ctx, level)
+}
+
+func (h consoleSpacingHandler) Handle(ctx context.Context, record slog.Record) error {
+	if err := h.base.Handle(ctx, record); err != nil {
+		return err
+	}
+	if record.Level <= slog.LevelInfo {
+		if _, err := io.WriteString(h.out, "\n"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h consoleSpacingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return consoleSpacingHandler{
+		base: h.base.WithAttrs(attrs),
+		out:  h.out,
+	}
+}
+
+func (h consoleSpacingHandler) WithGroup(name string) slog.Handler {
+	return consoleSpacingHandler{
+		base: h.base.WithGroup(name),
+		out:  h.out,
+	}
+}
+
+func newConsoleHandler(out io.Writer, options *slog.HandlerOptions) slog.Handler {
+	colorizedOut := colorizingLogWriter{base: out}
+	return consoleSpacingHandler{
+		base: slog.NewTextHandler(colorizedOut, options),
+		out:  out,
+	}
+}
+
+func (w colorizingLogWriter) Write(p []byte) (int, error) {
+	text := string(p)
+	text = strings.ReplaceAll(text, "level=ERROR", "level="+colorRed+"ERROR"+colorReset)
+	return w.base.Write([]byte(text))
+}
+
 func buildLogger(levelName string, logFile string, silent bool) (*slog.Logger, io.Closer, error) {
 	level := parseLogLevel(levelName)
 	options := &slog.HandlerOptions{Level: level}
 	handlers := make([]slog.Handler, 0, 2)
 	if !silent {
-		handlers = append(handlers, slog.NewTextHandler(os.Stderr, options))
+		handlers = append(handlers, newConsoleHandler(os.Stderr, options))
 	}
 	if logFile == "" {
 		if len(handlers) == 0 {

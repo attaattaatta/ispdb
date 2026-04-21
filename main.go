@@ -5,25 +5,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"ispdb/internal/app"
 )
 
-const version = "0.3.2-beta"
+const version = "0.4.0-beta"
 
 //go:embed internal/ascii/*.txt
 var asciiFS embed.FS
 
 func main() {
+	stopInterruptHandler := app.SetupInterruptHandler()
+	defer stopInterruptHandler()
+
 	binaryName := filepath.Base(os.Args[0])
+	if app.RequiresRootForArgs(os.Args[1:]) {
+		if err := app.CheckRootPreflight(); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, helpTip())
+			os.Exit(1)
+		}
+	}
 	cfg, err := app.ParseConfig(binaryName, os.Args[1:])
 	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		if cfg.LogLevel != "off" {
-			fmt.Fprintln(os.Stderr, err.Error())
-			if shouldShowHelpAfterParseError(err.Error()) {
+			if tip := parseErrorTip(err.Error()); tip != "" {
 				fmt.Fprintln(os.Stderr)
-				fmt.Fprintln(os.Stderr, app.HelpText(version, binaryName))
+				fmt.Fprintln(os.Stderr, tip)
 			}
 		}
 		os.Exit(2)
@@ -45,17 +55,13 @@ func main() {
 	}
 }
 
-func shouldShowHelpAfterParseError(message string) bool {
-	hints := []string{
-		"Supported values:",
-		"Tip:",
-		"requires --",
-		"can be used only",
+func parseErrorTip(message string) string {
+	if message == "" {
+		return ""
 	}
-	for _, hint := range hints {
-		if strings.Contains(message, hint) {
-			return false
-		}
-	}
-	return true
+	return helpTip()
+}
+
+func helpTip() string {
+	return "Tip: -h, --help to show help"
 }

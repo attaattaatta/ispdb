@@ -453,6 +453,9 @@ func trackedTables() []string {
 	return []string{
 		"isppackages",
 		"users",
+		"userprops",
+		"preset",
+		"preset_props",
 		"ftp_users",
 		"webdomain",
 		"webdomain_alias",

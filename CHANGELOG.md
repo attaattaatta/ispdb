@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0-beta
+
+- expanded `--dest` into a fuller sync workflow with clearer step-by-step progress, destination-side root validation, low-memory swapfile bootstrap on the target when needed, summary reporting, overwrite-aware skipping, and safer remote log tracking through `progressid`, panel logs, and package-operation state
+- improved remote inspection and sync planning for `--dest --list` and `--dest --list ...,commands`, including ordered comma-separated scopes, strict read-only list mode, two-way sync views, SQLite sidecar awareness, command generation only for real local/remote differences, and explicit no-difference output when nothing needs syncing
+- changed `--dest` confirmation flow to inspect the destination first, show only the commands that are actually needed for that specific server before asking for confirmation, and then continue in the same SSH session without asking for the password twice
+- reworked package sync generation: grouped package commands now use per-group diffs, `feature.update` is emitted once per sync block, Debian/Ubuntu vs non-Debian Apache package names are normalized, `package_clamav=off` is always preserved in email group commands, and `altphp` uses grouped `feature.resume` commands with only differing versions
+- aligned database sync previews with summary output by generating commands for all configured DB servers and stopping summary from reporting standalone `db users` that the current command generator does not sync separately
+- improved generated entity commands by preserving real user `limit_*` values from `userprops`/`preset_props`, using `ipsrc=auto` for email domains, pruning unsupported panel arguments on destination side, and handling web-site certificate/bootstrap flows more safely
+- reduced `--dest` memory pressure from large panel logs by switching remote log processing to streamed chunk-based line parsing instead of reading full log tails into memory
+- refined console UX and CLI behavior: safer commented command blocks, delete/uninstall warnings in list command previews, emphasized sync banners, banner-style remote summaries, double-press `Ctrl+C` termination, clearer remote command/log spacing, visible monitoring commands during long `--dest` waits, confirmation before non-`-y` destination runs, cleaner status colouring, shorter parse/root failure hints, restored `-l` for `--list`, and updated `--log` / `--dest` help
+- moved user-specific runtime state from hardcoded `/root` paths to the current home directory where appropriate, including lock files, local backups/markers, and SSH config discovery for file-based and non-root workflows
+
+## 0.3.3-beta
+
+- switched automatic ispmanager install on clean destination servers from `--dbtype mysql` to `--dbtype sqlite`
+- reduced `mgrctl feature` polling pressure during `--dest` package installation, added backoff for temporary `request_failed: The request was terminated by administrator` responses, and started checking `pkg.log` / `ispmgr.log` continuously while waiting
+- deduplicated generated remote package steps and entity commands before execution so the same command is not submitted twice in one run
+- fixed recent-log scanning to read only new lines after the last observed position
+
 ## 0.3.2-beta
 
 - renamed the `FTP users` section to `ftp users`

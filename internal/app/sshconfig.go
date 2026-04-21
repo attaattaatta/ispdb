@@ -10,7 +10,9 @@ func discoverSSHIdentityFiles() []string {
 	seen := map[string]struct{}{}
 	files := make([]string, 0)
 	parseSSHConfig("/etc/ssh/ssh_config", seen, &files)
-	parseSSHConfig("/root/.ssh/config", seen, &files)
+	if home, err := userHomeDirHook(); err == nil && home != "" {
+		parseSSHConfig(filepath.Join(home, ".ssh", "config"), seen, &files)
+	}
 	return files
 }
 
@@ -54,7 +56,11 @@ func parseSSHConfig(path string, seen map[string]struct{}, files *[]string) {
 
 func expandHome(path string) string {
 	if strings.HasPrefix(path, "~/") {
-		return filepath.Join("/root", path[2:])
+		home, err := userHomeDirHook()
+		if err != nil || home == "" {
+			return path
+		}
+		return filepath.Join(home, path[2:])
 	}
 	return path
 }
