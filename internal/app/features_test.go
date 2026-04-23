@@ -23,6 +23,23 @@ func TestParseFeatureRecords(t *testing.T) {
 	}
 }
 
+func TestParseFeatureRecordsKeepsStatusSeparateFromBadState(t *testing.T) {
+	t.Parallel()
+
+	output := "name=web dname=web content= featlist= active=off promo=off type=recommended badstate=install\n"
+
+	records := parseFeatureRecords(output)
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	if records[0].Status != "" {
+		t.Fatalf("expected empty status when only badstate is present, got %#v", records[0])
+	}
+	if records[0].BadState != "install" {
+		t.Fatalf("expected badstate=install, got %#v", records[0])
+	}
+}
+
 func TestInstalledPackagesFromFeatures(t *testing.T) {
 	t.Parallel()
 
@@ -380,6 +397,60 @@ func TestBuildPackageSyncStepsAlwaysKeepsClamAVOffInEmailGroup(t *testing.T) {
 	}
 	if !strings.Contains(emailStep.Command, "package_clamav=off") {
 		t.Fatalf("expected email command to always contain package_clamav=off, got %q", emailStep.Command)
+	}
+}
+
+func TestBuildPackageSyncStepsWebOpenLiteSpeedReplacesApacheNginxAndPHPOnUbuntu(t *testing.T) {
+	t.Parallel()
+
+	steps, warnings := buildPackageSyncSteps(
+		[]Package{
+			{ID: "1", Name: "awstats"},
+			{ID: "2", Name: "logrotate"},
+			{ID: "3", Name: "openlitespeed"},
+			{ID: "4", Name: "openlitespeed-php"},
+		},
+		map[string]struct{}{
+			"apache-itk-ubuntu": {},
+			"nginx":             {},
+			"php":               {},
+			"php-fpm":           {},
+			"awstats":           {},
+			"logrotate":         {},
+		},
+		packagePlanOptions{
+			TargetOS:      "Ubuntu 24.04.3 (x86_64)",
+			TargetPanel:   "ispmanager Host",
+			SkipSatisfied: true,
+		},
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	var webStep *packageSyncStep
+	for i := range steps {
+		if steps[i].Feature == "web" {
+			webStep = &steps[i]
+			break
+		}
+	}
+	if webStep == nil {
+		t.Fatalf("expected web step, got %#v", steps)
+	}
+
+	command := webStep.Command
+	for _, want := range []string{
+		"package_nginx=off",
+		"package_openlitespeed=on",
+		"package_openlitespeed-php=on",
+		"package_php=off",
+		"package_php-fpm=off",
+		"packagegroup_apache=turn_off",
+	} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("expected web diff command to contain %q, got %q", want, command)
+		}
 	}
 }
 

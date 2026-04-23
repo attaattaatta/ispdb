@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"math/rand"
@@ -308,5 +309,49 @@ func TestConfirmRemoteExecutionShowsCommandsAndStopsOnNo(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "commands to run at remote server:") {
 		t.Fatalf("expected command preview before confirmation, got:\n%s", out.String())
+	}
+}
+
+func TestPruneRemoteExecutionPreviewGroupsUsesDestinationFeatureForm(t *testing.T) {
+	t.Parallel()
+
+	runner := &remoteRunner{
+		logger: slog.Default(),
+		runOverride: func(ctx context.Context, command string, trace bool) (string, error) {
+			if strings.Contains(command, "feature.edit") && strings.Contains(command, "out=text") {
+				return strings.Join([]string{
+					"title=Web-server (WWW)",
+					"package_nginx=on",
+					"package_logrotate=on",
+					"package_awstats=on",
+					"package_php=on",
+					"package_php-fpm=on",
+					"elid=web",
+					"package_openlitespeed=off",
+					"package_phpcomposer=off",
+					"package_nginx_modsecurity=off",
+					"package_apache_modsecurity=off",
+					"package_openlitespeed_modsecurity=off",
+					"packagegroup_apache=apache-itk-ubuntu",
+				}, "\n"), nil
+			}
+			return "", nil
+		},
+	}
+
+	groups := []CommandGroup{{
+		Title: "packages (web)",
+		Commands: []string{
+			"/usr/local/mgr5/sbin/mgrctl -m ispmgr feature.edit sok=ok elid=web package_apache_modsecurity=off package_awstats=on package_logrotate=on package_nginx=off package_nginx_modsecurity=off package_openlitespeed=on package_openlitespeed-php=on package_openlitespeed_modsecurity=off package_php=off package_php-fpm=off package_phpcomposer=off packagegroup_apache=turn_off",
+		},
+	}}
+
+	pruned := pruneRemoteExecutionPreviewGroups(context.Background(), runner, groups)
+	got := pruned[0].Commands[0]
+	if !strings.Contains(got, "package_openlitespeed-php=on") {
+		t.Fatalf("expected package_openlitespeed-php to remain in preview alongside package_openlitespeed=on, got %q", got)
+	}
+	if !strings.Contains(got, "package_nginx=off") || !strings.Contains(got, "packagegroup_apache=turn_off") {
+		t.Fatalf("expected supported diff params to stay in preview, got %q", got)
 	}
 }

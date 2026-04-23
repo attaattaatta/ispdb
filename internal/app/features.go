@@ -53,7 +53,7 @@ func parseFeatureRecords(output string) []featureRecord {
 			Active:  values["active"],
 			Promo:   values["promo"],
 			Type:    values["type"],
-			Status:  firstNonEmpty(values["status"], values["badstate"]),
+			Status:  values["status"],
 			BadState: values["badstate"],
 		})
 	}
