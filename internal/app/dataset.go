@@ -120,12 +120,14 @@ func buildSourceData(raw rawSource, keyPath string) (SourceData, error) {
 			owner = rowValue(row, "users")
 		}
 		item := EmailDomain{
-			ID:      rowValue(row, "id"),
-			Name:    rowValue(row, "name"),
-			NameIDN: rowValue(row, "name_idn"),
-			IP:      rowValue(row, "ip"),
-			Active:  rowValue(row, "active"),
-			Owner:   owner,
+			ID:          rowValue(row, "id"),
+			Name:        rowValue(row, "name"),
+			NameIDN:     rowValue(row, "name_idn"),
+			IP:          rowValue(row, "ip"),
+			Active:      rowValue(row, "active"),
+			Owner:       owner,
+			Secure:      rowValue(row, "secure"),
+			SecureAlias: rowValue(row, "secure_alias"),
 		}
 		data.EmailDomains = append(data.EmailDomains, item)
 		emailDomainNames[item.ID] = item.Name

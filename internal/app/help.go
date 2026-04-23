@@ -17,10 +17,8 @@ func buildHelp(version string, binaryName string) string {
 	fmt.Fprintf(&builder, "Optional private key for passwords decryption.\n\n")
 	fmt.Fprintf(&builder, "-l, --list [%s]\n", strings.Join(listModes, "|"))
 	fmt.Fprintf(&builder, "Show local data in console. Comma-separated scopes are supported and displayed in the same order. Together with --dest it shows remote panel data for [%s].\n\n", strings.Join(destModes, "|"))
-	fmt.Fprintf(&builder, "-e, --export <file>\n")
-	fmt.Fprintf(&builder, "Write export to file.\n\n")
-	fmt.Fprintf(&builder, "--export-data [%s]\n", strings.Join(exportScopes, "|"))
-	fmt.Fprintf(&builder, "Choose what to export.\n\n")
+	fmt.Fprintf(&builder, "-e, --export [%s] <file>\n", strings.Join(exportScopes, "|"))
+	fmt.Fprintf(&builder, "Write export to file. Comma-separated scopes are supported and exported in the same order. If scope is omitted, the current --list scope is used.\n\n")
 	fmt.Fprintf(&builder, "--format [%s]\n", strings.Join(exportFormats, "|"))
 	fmt.Fprintf(&builder, "Choose export file format. Commands export supports only text.\n\n")
 	fmt.Fprintf(&builder, "--csv-delimiter <char>\n")
@@ -29,6 +27,8 @@ func buildHelp(version string, binaryName string) string {
 	fmt.Fprintf(&builder, "Show or export only selected columns.\n\n")
 	fmt.Fprintf(&builder, "--clean\n")
 	fmt.Fprintf(&builder, "When --columns has one column, print or export only values without table borders and totals.\n\n")
+	fmt.Fprintf(&builder, "--no-headers\n")
+	fmt.Fprintf(&builder, "Use only together with --export. Remove column headers and blank lines from exported output while keeping section titles.\n\n")
 	fmt.Fprintf(&builder, "-d, --dest <ipv4> [root_password|root_key] [%s]\n", strings.Join(destModes, "|"))
 	fmt.Fprintf(&builder, "Connect to destination server over SSH as root and run generated ispmanager API commands.\n")
 	fmt.Fprintf(&builder, "Optional trailing scope limits remote actions. Comma-separated scopes are supported and processed in the same order.\n\n")
@@ -90,8 +90,9 @@ func buildHelp(version string, binaryName string) string {
 			description: "Export loaded data or generated commands to text, CSV, or JSON files.",
 			commands: []string{
 				command + " -f /usr/local/mgr5/etc/ispmgr.db --list users",
-				command + " -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-data.txt --export-data data",
-				command + " -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-commands.txt --export-data commands",
+				command + " -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export data /root/ispdb-data.txt",
+				command + " -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export commands /root/ispdb-commands.txt",
+				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --export users,commands,dns /root/ispdb-mixed.txt",
 				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list dns --export /root/ispdb-dns.csv --format csv --csv-delimiter ';'",
 				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list email --export /root/ispdb-email.json --format json",
 				command + " -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list webdomains --export /root/ispdb-webdomains --format text --columns name",

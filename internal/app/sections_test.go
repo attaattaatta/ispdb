@@ -154,6 +154,11 @@ func TestPrepareListSectionsReordersRequestedColumnsForFTPAndWebAndEmailAndDatab
 			Rows:    [][]string{{"1", "site.tld", "", "www.site.tld", "/var/www/site", "on", "site.tld", "off", "php_mode_mod", "isp-php83", "on", "alice", "192.0.2.1", "off"}},
 		},
 		{
+			Title:   "email domains",
+			Headers: []string{"id", "name", "name_idn", "ip", "active", "owner", "secure", "secure_alias"},
+			Rows:    [][]string{{"1", "example.com", "", "192.0.2.10", "on", "alice", "on", "mail.example.com"}},
+		},
+		{
 			Title:   "email boxes",
 			Headers: []string{"id", "name", "domain", "email_forward", "password", "path", "active", "maxsize", "used", "note"},
 			Rows:    [][]string{{"1", "info", "example.com", "dest@example.net", "mailpass", "/mail/info", "on", "0", "123", "note"}},
@@ -175,13 +180,18 @@ func TestPrepareListSectionsReordersRequestedColumnsForFTPAndWebAndEmailAndDatab
 		t.Fatalf("unexpected web domains headers order: %#v", got)
 	}
 
+	emailDomainWant := []string{"name", "ip", "active", "owner", "secure", "secure_alias"}
+	if got := sections[2].Headers; strings.Join(got, ",") != strings.Join(emailDomainWant, ",") {
+		t.Fatalf("unexpected email domains headers order: %#v", got)
+	}
+
 	emailWant := []string{"name", "domain", "password", "email_forward", "path", "active", "maxsize", "used_mb", "note"}
-	if got := sections[2].Headers; strings.Join(got, ",") != strings.Join(emailWant, ",") {
+	if got := sections[3].Headers; strings.Join(got, ",") != strings.Join(emailWant, ",") {
 		t.Fatalf("unexpected email boxes headers order: %#v", got)
 	}
 
 	databaseWant := []string{"name", "owner", "db_server", "unaccounted"}
-	if got := sections[3].Headers; strings.Join(got, ",") != strings.Join(databaseWant, ",") {
+	if got := sections[4].Headers; strings.Join(got, ",") != strings.Join(databaseWant, ",") {
 		t.Fatalf("unexpected databases headers order: %#v", got)
 	}
 }
@@ -222,6 +232,40 @@ func TestListSectionsForScopesAddsEmailForwardColumn(t *testing.T) {
 	}
 	if indexOfHeader(emailBoxes.Headers, "id") >= 0 {
 		t.Fatalf("id header should be hidden in list view: %#v", emailBoxes.Headers)
+	}
+}
+
+func TestListSectionsForScopesUsesNoForEmptyEmailForward(t *testing.T) {
+	t.Parallel()
+
+	data := SourceData{
+		EmailBoxes: []EmailBox{{
+			ID:     "1",
+			Name:   "box",
+			Domain: "example.com",
+			Active: "on",
+		}},
+	}
+
+	sections := data.listSectionsForScopes([]string{"email"})
+	var emailBoxes Section
+	found := false
+	for _, section := range sections {
+		if section.Title == "email boxes" {
+			emailBoxes = section
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("email boxes section not found")
+	}
+	idx := indexOfHeader(emailBoxes.Headers, "email_forward")
+	if idx < 0 {
+		t.Fatalf("email_forward header not found: %#v", emailBoxes.Headers)
+	}
+	if got := emailBoxes.Rows[0][idx]; got != "no" {
+		t.Fatalf("expected empty email_forward to be rendered as no, got %q", got)
 	}
 }
 

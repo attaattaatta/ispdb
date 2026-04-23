@@ -114,7 +114,7 @@ func (s SourceData) sectionsForScopes(scopes []string) []Section {
 			}
 			appendUnique(Section{
 				Title:        "email domains",
-				Headers:      []string{"id", "name", "name_idn", "ip", "active", "owner"},
+				Headers:      []string{"id", "name", "name_idn", "ip", "active", "owner", "secure", "secure_alias"},
 				Rows:         emailDomainRows(s.EmailDomains),
 				EmptyMessage: "No email domains were found.",
 			})
@@ -197,7 +197,7 @@ func dbUserRows(values []DBUser) [][]string {
 func emailDomainRows(values []EmailDomain) [][]string {
 	rows := make([][]string, 0, len(values))
 	for _, value := range values {
-		rows = append(rows, []string{value.ID, value.Name, value.NameIDN, value.IP, value.Active, value.Owner})
+		rows = append(rows, []string{value.ID, value.Name, value.NameIDN, value.IP, value.Active, value.Owner, value.Secure, value.SecureAlias})
 	}
 	return rows
 }
@@ -229,8 +229,9 @@ func prepareListSections(sections []Section) []Section {
 func prepareListSection(section Section) Section {
 	headers := make([]string, 0, len(section.Headers))
 	indexes := make([]int, 0, len(section.Headers))
+	sectionTitle := strings.ToLower(strings.TrimSpace(section.Title))
 	for index, header := range section.Headers {
-		if shouldHideListColumn(header) {
+		if shouldHideListColumn(sectionTitle, header) {
 			continue
 		}
 		headers = append(headers, header)
@@ -325,6 +326,8 @@ func listColumnOrder(title string) []string {
 		return []string{"name", "aliases", "docroot", "php_version", "php_mode", "owner", "ssl_cert", "autosubdomain", "active", "ipaddr", "redirect_http"}
 	case "databases":
 		return []string{"name", "owner", "db_server", "unaccounted"}
+	case "email domains":
+		return []string{"name", "ip", "active", "owner", "secure", "secure_alias"}
 	case "email boxes":
 		return []string{"name", "domain", "password", "email_forward", "path", "active", "maxsize", "used", "note"}
 	default:
@@ -361,6 +364,19 @@ func normalizeListRows(title string, headers []string, rows [][]string) [][]stri
 			normalized = append(normalized, item)
 		}
 		return normalized
+	case "email boxes":
+		forwardIndex := indexOfHeader(headers, "email_forward")
+		if forwardIndex < 0 {
+			return rows
+		}
+		for _, row := range rows {
+			item := append([]string{}, row...)
+			if forwardIndex < len(item) && strings.TrimSpace(item[forwardIndex]) == "" {
+				item[forwardIndex] = "no"
+			}
+			normalized = append(normalized, item)
+		}
+		return normalized
 	default:
 		return rows
 	}
@@ -380,10 +396,9 @@ func trimDatabaseServerSavedVer(value string) string {
 	return value
 }
 
-func shouldHideListColumn(header string) bool {
+func shouldHideListColumn(sectionTitle string, header string) bool {
 	switch strings.ToLower(strings.TrimSpace(header)) {
 	case "id",
-		"secure",
 		"name_idn",
 		"safepasswd",
 		"fullname",
@@ -393,6 +408,8 @@ func shouldHideListColumn(header string) bool {
 		"backup_type",
 		"backup_size_limit":
 		return true
+	case "secure":
+		return sectionTitle != "email domains"
 	default:
 		return false
 	}

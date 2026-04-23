@@ -9,11 +9,11 @@ import (
 func TestRenderSummaryBannerSuccess(t *testing.T) {
 	t.Parallel()
 
-	got := stripANSI(renderSummaryBanner(summaryStateSuccess))
+	got := stripANSI(renderSummaryBanner(summaryStateSuccess, "", ""))
 	if !strings.Contains(got, "# SUMMARY") {
 		t.Fatalf("expected summary banner label, got:\n%s", got)
 	}
-	if strings.Count(got, "# ================================================") != 2 {
+	if strings.Count(got, "# =============================================================================") != 2 {
 		t.Fatalf("expected two separator lines, got:\n%s", got)
 	}
 }
@@ -21,7 +21,7 @@ func TestRenderSummaryBannerSuccess(t *testing.T) {
 func TestRenderSummaryBannerWarningUsesYellowSummary(t *testing.T) {
 	t.Parallel()
 
-	got := renderSummaryBanner(summaryStateWarning)
+	got := renderSummaryBanner(summaryStateWarning, "", "")
 	want := formatTitle("# ", true) + colorYellow + "SUMMARY" + colorReset
 	if !strings.Contains(got, want) {
 		t.Fatalf("expected yellow SUMMARY, got:\n%q", got)
@@ -31,18 +31,28 @@ func TestRenderSummaryBannerWarningUsesYellowSummary(t *testing.T) {
 func TestRenderSummaryBannerErrorUsesRedSummary(t *testing.T) {
 	t.Parallel()
 
-	got := renderSummaryBanner(summaryStateError)
+	got := renderSummaryBanner(summaryStateError, "", "")
 	want := formatTitle("# ", true) + colorRed + "SUMMARY" + colorReset
 	if !strings.Contains(got, want) {
 		t.Fatalf("expected red SUMMARY, got:\n%q", got)
 	}
 }
 
+func TestRenderSummaryBannerIncludesSourceAndDestinationWithoutColoringSuffix(t *testing.T) {
+	t.Parallel()
+
+	got := renderSummaryBanner(summaryStateWarning, "/usr/local/mgr5/etc/ispmgr.db", "203.0.113.10")
+	wantSummary := formatTitle("# ", true) + colorYellow + "SUMMARY" + colorReset + " (local /usr/local/mgr5/etc/ispmgr.db to 203.0.113.10)"
+	if !strings.Contains(got, wantSummary) {
+		t.Fatalf("expected summary banner with plain suffix, got:\n%q", got)
+	}
+}
+
 func TestRenderSummaryBannerBlockStartsWithBlankLine(t *testing.T) {
 	t.Parallel()
 
-	got := stripANSI(renderSummaryBannerBlock(summaryStateSuccess))
-	if !strings.HasPrefix(got, "\n# ================================================") {
+	got := stripANSI(renderSummaryBannerBlock(summaryStateSuccess, "", ""))
+	if !strings.HasPrefix(got, "\n# =============================================================================") {
 		t.Fatalf("expected summary block to start with a blank line, got:\n%q", got)
 	}
 }
@@ -51,7 +61,7 @@ func TestRenderSummaryFooter(t *testing.T) {
 	t.Parallel()
 
 	got := stripANSI(renderSummaryFooter())
-	if got != "# ================================================" {
+	if got != "# =============================================================================" {
 		t.Fatalf("renderSummaryFooter() = %q", got)
 	}
 }
@@ -72,7 +82,7 @@ func TestRenderSummaryLinePrefixesGreenHash(t *testing.T) {
 func TestSummaryStateFromOutcomeReturnsErrorWhenWorkflowFailed(t *testing.T) {
 	t.Parallel()
 
-	if got := summaryStateFromOutcome(nil, errors.New("boom")); got != summaryStateError {
+	if got := summaryStateFromOutcome(nil, nil, errors.New("boom")); got != summaryStateError {
 		t.Fatalf("summaryStateFromOutcome(nil, err) = %v, want %v", got, summaryStateError)
 	}
 }
@@ -80,16 +90,24 @@ func TestSummaryStateFromOutcomeReturnsErrorWhenWorkflowFailed(t *testing.T) {
 func TestSummaryStateFromOutcomeReturnsErrorWhenFailuresExist(t *testing.T) {
 	t.Parallel()
 
-	if got := summaryStateFromOutcome([]remoteFailure{{Action: "x", Reason: "y"}}, nil); got != summaryStateError {
+	if got := summaryStateFromOutcome([]remoteFailure{{Action: "x", Reason: "y"}}, nil, nil); got != summaryStateError {
 		t.Fatalf("summaryStateFromOutcome(failures, nil) = %v, want %v", got, summaryStateError)
 	}
 }
 
-func TestSummaryStateFromOutcomeReturnsWarningWithoutFailuresOrError(t *testing.T) {
+func TestSummaryStateFromOutcomeReturnsWarningWhenWarningsExist(t *testing.T) {
 	t.Parallel()
 
-	if got := summaryStateFromOutcome(nil, nil); got != summaryStateWarning {
-		t.Fatalf("summaryStateFromOutcome(nil, nil) = %v, want %v", got, summaryStateWarning)
+	if got := summaryStateFromOutcome(nil, []string{"warning"}, nil); got != summaryStateWarning {
+		t.Fatalf("summaryStateFromOutcome(nil, warnings, nil) = %v, want %v", got, summaryStateWarning)
+	}
+}
+
+func TestSummaryStateFromOutcomeReturnsSuccessWithoutFailuresWarningsOrError(t *testing.T) {
+	t.Parallel()
+
+	if got := summaryStateFromOutcome(nil, nil, nil); got != summaryStateSuccess {
+		t.Fatalf("summaryStateFromOutcome(nil, nil, nil) = %v, want %v", got, summaryStateSuccess)
 	}
 }
 

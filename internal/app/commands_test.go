@@ -43,7 +43,6 @@ func TestBuildCommandsUsesDefaultIPAndNS(t *testing.T) {
 	joined := strings.Join(flattenCommandGroups(groups), "\n")
 	for _, want := range []string{
 		"site_ipaddrs=203.0.113.10",
-		"ipsrc=auto",
 		"'ns=ns1.example.com. ns2.example.com.'",
 	} {
 		if !strings.Contains(joined, want) {
@@ -54,8 +53,8 @@ func TestBuildCommandsUsesDefaultIPAndNS(t *testing.T) {
 		if !strings.Contains(line, "emaildomain.edit") {
 			continue
 		}
-		if strings.Contains(line, " ip=") {
-			t.Fatalf("email domain commands must not contain explicit ip anymore:\n%s", line)
+		if strings.Contains(line, " ip=") || strings.Contains(line, " ipsrc=") {
+			t.Fatalf("email domain commands must not contain ip or ipsrc anymore:\n%s", line)
 		}
 	}
 }
@@ -209,6 +208,28 @@ func TestBuildCommandsForScopesPreserveRequestedOrder(t *testing.T) {
 	}
 }
 
+func TestBuildCommandsForUsersScopeSplitsUsersAndFTPUsersGroups(t *testing.T) {
+	t.Parallel()
+
+	data := SourceData{
+		Users: []User{{ID: "1", Name: "alice"}},
+		FTPUsers: []FTPUser{
+			{ID: "2", Name: "ftp-alice", Owner: "alice"},
+		},
+	}
+
+	groups, warnings := buildCommandsForScopes(data, []string{"users"}, CommandBuildOptions{})
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "FTP user ftp-alice password was not available") {
+		t.Fatalf("expected FTP password warning, got %v", warnings)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("expected users and ftp users groups, got %#v", groups)
+	}
+	if groups[0].Title != "users" || groups[1].Title != "ftp users" {
+		t.Fatalf("unexpected user group order: %#v", groups)
+	}
+}
+
 func TestCommandScopesFromListModeCommandsAndDataUseOnlyRequestedDataScopes(t *testing.T) {
 	t.Parallel()
 
@@ -280,5 +301,93 @@ func TestBuildCommandsForDatabasesGeneratesPasswordWhenDBServerPasswordIsHidden(
 	}
 	if strings.Contains(command, "password=''") || !strings.Contains(command, "password=") {
 		t.Fatalf("expected generated non-empty password in command, got %s", command)
+	}
+}
+
+func TestBuildCommandsForDatabasesFallsBackToRandomPasswordWhenDBUserNameDiffers(t *testing.T) {
+	t.Parallel()
+
+	data := SourceData{
+		Databases: []Database{
+			{ID: "1", Name: "appdb", Owner: "alice", Server: "mariadb-10.0"},
+		},
+		DBUsers: []DBUser{
+			{ID: "1", Name: "appuser", Server: "mariadb-10.0", Password: "secret-pass"},
+		},
+	}
+
+	groups, warnings := buildCommandsForScopes(data, []string{"databases"}, CommandBuildOptions{})
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "Database appdb password was not available") {
+		t.Fatalf("expected random-password warning, got %v", warnings)
+	}
+
+	joined := strings.Join(flattenCommandGroups(groups), "\n")
+	if !strings.Contains(joined, "db.edit name=appdb") {
+		t.Fatalf("expected generated database command, got\n%s", joined)
+	}
+	if !strings.Contains(joined, "username=appdb") {
+		t.Fatalf("expected database name to be used as username fallback, got\n%s", joined)
+	}
+	if strings.Contains(joined, "password=secret-pass") || strings.Contains(joined, "confirm=secret-pass") {
+		t.Fatalf("did not expect unrelated db user password to be reused, got\n%s", joined)
+	}
+}
+
+func TestBuildCommandsForEmailUsesSourceSecureValues(t *testing.T) {
+	t.Parallel()
+
+	data := SourceData{
+		EmailDomains: []EmailDomain{
+			{
+				ID:          "1",
+				Name:        "example.com",
+				Owner:       "alice",
+				Secure:      "on",
+				SecureAlias: "mail.example.com",
+			},
+		},
+	}
+
+	groups, warnings := buildCommandsForScopes(data, []string{"email"}, CommandBuildOptions{})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	joined := strings.Join(flattenCommandGroups(groups), "\n")
+	for _, want := range []string{
+		"emaildomain.edit",
+		"email=admin@example.com",
+		"secure=on",
+		"secure_alias=mail.example.com",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected generated email domain command to contain %q\n%s", want, joined)
+		}
+	}
+}
+
+func TestBuildCommandsForEmailDoesNotAddAdminEmailWhenSecureOff(t *testing.T) {
+	t.Parallel()
+
+	data := SourceData{
+		EmailDomains: []EmailDomain{
+			{
+				ID:          "1",
+				Name:        "example.com",
+				Owner:       "alice",
+				Secure:      "off",
+				SecureAlias: "mail.example.com",
+			},
+		},
+	}
+
+	groups, warnings := buildCommandsForScopes(data, []string{"email"}, CommandBuildOptions{})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	joined := strings.Join(flattenCommandGroups(groups), "\n")
+	if strings.Contains(joined, "email=admin@example.com") {
+		t.Fatalf("did not expect admin email param for secure=off\n%s", joined)
 	}
 }

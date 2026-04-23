@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestParseConfigCommandsAlias(t *testing.T) {
 	t.Parallel()
@@ -128,5 +131,86 @@ func TestParseConfigDestScopeSupportsCommaSeparatedScopes(t *testing.T) {
 	}
 	if cfg.DestAuth != "" {
 		t.Fatalf("did not expect DestAuth when trailing dest token is a scope list, got %q", cfg.DestAuth)
+	}
+}
+
+func TestParseConfigExportSupportsInlineScope(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := ParseConfig("ispdb", []string{"--export", "commands", "/root/out.txt", "--help"})
+	if err != nil {
+		t.Fatalf("ParseConfig returned error: %v", err)
+	}
+	if cfg.ExportScope != "commands" {
+		t.Fatalf("expected ExportScope=commands, got %q", cfg.ExportScope)
+	}
+	if cfg.ExportFile != filepath.Clean("/root/out.txt") {
+		t.Fatalf("expected ExportFile=/root/out.txt, got %q", cfg.ExportFile)
+	}
+}
+
+func TestParseConfigExportSupportsCommaSeparatedInlineScopes(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := ParseConfig("ispdb", []string{"--export", "users,commands,dns", "/root/out.txt", "--help"})
+	if err != nil {
+		t.Fatalf("ParseConfig returned error: %v", err)
+	}
+	if cfg.ExportScope != "users,commands,dns" {
+		t.Fatalf("expected ExportScope=users,commands,dns, got %q", cfg.ExportScope)
+	}
+	if cfg.ExportFile != filepath.Clean("/root/out.txt") {
+		t.Fatalf("expected ExportFile=/root/out.txt, got %q", cfg.ExportFile)
+	}
+}
+
+func TestParseConfigExportStillSupportsFileOnly(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := ParseConfig("ispdb", []string{"--list", "users", "--export", "/root/out.txt", "--help"})
+	if err != nil {
+		t.Fatalf("ParseConfig returned error: %v", err)
+	}
+	if cfg.ExportFile != filepath.Clean("/root/out.txt") {
+		t.Fatalf("expected ExportFile=/root/out.txt, got %q", cfg.ExportFile)
+	}
+	if cfg.ExportScope != "users" {
+		t.Fatalf("expected ExportScope=users for file-only form with --list users, got %q", cfg.ExportScope)
+	}
+}
+
+func TestParseConfigExportFileOnlyMirrorsCommaSeparatedListScope(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := ParseConfig("ispdb", []string{"--list", "users,commands,dns", "--export", "/root/out.txt", "--help"})
+	if err != nil {
+		t.Fatalf("ParseConfig returned error: %v", err)
+	}
+	if cfg.ExportScope != "users,commands,dns" {
+		t.Fatalf("expected ExportScope to mirror list scope, got %q", cfg.ExportScope)
+	}
+}
+
+func TestParseConfigRejectsRemovedExportDataFlag(t *testing.T) {
+	t.Parallel()
+
+	_, err := ParseConfig("ispdb", []string{"--export-data", "commands"})
+	if err == nil {
+		t.Fatalf("expected error for removed --export-data flag")
+	}
+	if err.Error() != "unknown option: --export-data" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseConfigNoHeadersRequiresExport(t *testing.T) {
+	t.Parallel()
+
+	_, err := ParseConfig("ispdb", []string{"--no-headers"})
+	if err == nil {
+		t.Fatalf("expected error for --no-headers without --export")
+	}
+	if err.Error() != "--no-headers requires --export <file>" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

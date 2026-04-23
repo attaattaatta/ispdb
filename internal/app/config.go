@@ -29,47 +29,49 @@ var (
 )
 
 type Config struct {
-	DBFile          string
-	DBDisplay       string
-	ISPKey          string
-	ShowVersion     bool
-	ListMode        string
-	ListExplicit    bool
-	ExportFile      string
-	ExportScope     string
-	ExportFormat    string
-	DestHost        string
-	DestPort        int
-	DestAuth        string
-	DestScope       string
-	Force           bool
-	AutoYes         bool
-	Overwrite       bool
-	CopyConfigs     bool
-	NoDeletePackages bool
+	DBFile              string
+	DBDisplay           string
+	ISPKey              string
+	ShowVersion         bool
+	ListMode            string
+	ListExplicit        bool
+	ExportFile          string
+	ExportScope         string
+	ExportFormat        string
+	DestHost            string
+	DestPort            int
+	DestAuth            string
+	DestScope           string
+	Force               bool
+	AutoYes             bool
+	Overwrite           bool
+	CopyConfigs         bool
+	NoDeletePackages    bool
 	NoChangeIPAddresses bool
-	ShowHelp        bool
-	LogLevel        string
-	LogFile         string
-	Silent          bool
-	UseLocalMySQL   bool
-	MySQLPassword   string
-	CSVDelimiter    rune
-	Columns         []string
-	BulkMode        string
-	BulkType        string
-	BinaryName      string
-	DomainsSource   string
-	OwnersSource    string
-	IPsSource       string
-	NamesSource     string
-	PasswordsSource string
-	DBServersSource string
-	NSSource        string
-	LEMode          string
-	MemeMode        bool
-	DevMode         bool
-	CleanOutput     bool
+	ShowHelp            bool
+	LogLevel            string
+	LogFile             string
+	LogExplicit         bool
+	Silent              bool
+	UseLocalMySQL       bool
+	MySQLPassword       string
+	CSVDelimiter        rune
+	Columns             []string
+	BulkMode            string
+	BulkType            string
+	BinaryName          string
+	DomainsSource       string
+	OwnersSource        string
+	IPsSource           string
+	NamesSource         string
+	PasswordsSource     string
+	DBServersSource     string
+	NSSource            string
+	LEMode              string
+	MemeMode            bool
+	DevMode             bool
+	CleanOutput         bool
+	NoHeaders           bool
 }
 
 func ParseConfig(binaryName string, args []string) (Config, error) {
@@ -138,19 +140,18 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 			if err != nil {
 				return cfg, err
 			}
-			cfg.ExportFile = filepath.Clean(value)
-			i = next
-		case "--export-data":
-			value, next, err := nextArg(args, i, arg)
-			if err != nil {
-				return cfg, err
+			if scopes, parseErr := parseScopeList(value, exportScopes, "--export"); parseErr == nil {
+				fileValue, fileNext, fileErr := nextArg(args, next, arg)
+				if fileErr != nil {
+					return cfg, fmt.Errorf("%s requires [%s] <file>", arg, strings.Join(exportScopes, "|"))
+				}
+				cfg.ExportScope = strings.Join(scopes, ",")
+				cfg.ExportFile = filepath.Clean(fileValue)
+				i = fileNext
+			} else {
+				cfg.ExportFile = filepath.Clean(value)
+				i = next
 			}
-			value = strings.ToLower(value)
-			if !contains(exportScopes, value) {
-				return cfg, unsupportedValueError("--export-data", value, exportScopes)
-			}
-			cfg.ExportScope = value
-			i = next
 		case "--format":
 			value, next, err := nextArg(args, i, arg)
 			if err != nil {
@@ -181,6 +182,8 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 			i = next
 		case "--clean":
 			cfg.CleanOutput = true
+		case "--no-headers":
+			cfg.NoHeaders = true
 		case "-d", "--dest":
 			host, next, err := nextArg(args, i, arg)
 			if err != nil {
@@ -231,6 +234,7 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 				return cfg, unsupportedValueError("--log", level, logLevels)
 			}
 			cfg.LogLevel = level
+			cfg.LogExplicit = true
 			if level == "off" {
 				cfg.Silent = true
 			}
@@ -343,14 +347,17 @@ func ParseConfig(binaryName string, args []string) (Config, error) {
 	if cfg.ExportFile != "" && cfg.ExportScope == "" {
 		cfg.ExportScope = defaultExportScope(cfg.ListMode)
 	}
-	if cfg.ExportScope == "commands" && cfg.ExportFormat != "text" {
+	if hasScope(configuredScopeList(cfg.ExportScope, exportScopes), "commands") && cfg.ExportFormat != "text" {
 		return cfg, errors.New("commands export supports only --format text")
 	}
 	if cfg.ExportFile == "" && cfg.ExportScope != "" {
-		return cfg, errors.New("--export-data requires --export <file>")
+		return cfg, errors.New("--export requires <file>")
 	}
 	if cfg.ExportFormat != "text" && cfg.ExportFile == "" {
 		return cfg, errors.New("--format requires --export <file>")
+	}
+	if cfg.NoHeaders && cfg.ExportFile == "" {
+		return cfg, errors.New("--no-headers requires --export <file>")
 	}
 	if cfg.Force && cfg.DestHost == "" {
 		return cfg, errors.New("--force can be used only together with --dest")
@@ -463,8 +470,8 @@ func readMyCNFPassword(path string) (string, error) {
 
 func defaultExportScope(listMode string) string {
 	scopes := configuredScopeList(listMode, listModes)
-	if len(scopes) == 1 && scopes[0] != "all" {
-		return scopes[0]
+	if len(scopes) > 0 && !hasScope(scopes, "all") {
+		return strings.Join(scopes, ",")
 	}
 	return "data"
 }

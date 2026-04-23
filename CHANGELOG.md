@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.3-beta
+
+- removed the old hidden `--export-data` switch completely and made `-e, --export` the only export selector
+- `-e, --export` now accepts comma-separated ordered scopes such as `--export users,commands,dns /path/file`, and the file-only form still mirrors the current `--list` scope
+- mixed text exports now preserve requested scope order when combining data blocks and command blocks in one file
+- added `--no-headers` for exports to strip column headers and blank lines while keeping section titles
+- added explicit internal-operation logging that is emitted only when `--log` is set, keeps ordinary runs unchanged without the flag, supports a real `off` level, and separates log records with blank lines in both console and file output
+- made `--dest` honor the requested migration scopes during real execution, so single-scope runs such as `users` no longer execute package sync first and comma-separated scope lists are normalized to a predictable execution order with `packages` first when selected
+- improved remote summaries so skipped/already-existing entities are collected and shown as warnings, while fully clean destination runs now end with a green success summary and `ispmanager entities migration successfully complete.`
+
 ## 0.4.2-beta
 
 - improved `--dest` execution flow by creating the destination backup before panel installation, stopping redundant `license.info` polling once the panel is ready, and streaming installer output to the console/log as it arrives
@@ -9,6 +19,7 @@
 - execute destination package installation commands from the full source package plan during `--dest` instead of recalculating a smaller runtime package diff from the current destination state, while still normalizing package arguments for the target OS and panel form
 - mirror high-level remote progress lines such as `pushing command:`, `monitoring command:`, `connecting:`, `backup path on remote side:`, and action `OK`/`FAIL` statuses into the configured log file
 - when an `ispmgr.pem` key path is provided but the key cannot be loaded, keep `privkey:` in the header, show the warning in yellow, and print the raw load failure reason on the next line
+- merged export scope selection into `-e, --export`, so command forms like `--export commands /path/file` work directly while the older file-only form still keeps backward compatibility
 
 ## 0.4.1-beta
 

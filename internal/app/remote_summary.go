@@ -145,13 +145,24 @@ func (r *remoteRunner) printRemoteSummary(ctx context.Context, source SourceData
 	if !consoleLevelEnabled(r.cfg.LogLevel, "info") && len(r.failures) == 0 {
 		return
 	}
+	sourceLabel := strings.TrimSpace(source.SourcePath)
+	if sourceLabel == "" {
+		sourceLabel = strings.TrimSpace(r.cfg.DBDisplay)
+	}
+	destLabel := strings.TrimSpace(r.cfg.DestHost)
 
 	loaded, err := r.loadRemoteSourceData(ctx)
 	if err != nil {
-		state := summaryStateFromOutcome(r.failures, workflowErr)
+		state := summaryStateFromOutcome(r.failures, r.summaryWarnings, workflowErr)
 		if consoleLevelEnabled(r.cfg.LogLevel, "warn") {
-			r.ui.Println(renderSummaryBannerBlock(state))
-			r.ui.Println(renderSummaryLine("failed to inspect destination server state", ""))
+			r.ui.Println(renderSummaryBannerBlock(state, sourceLabel, destLabel))
+			for _, success := range r.summarySuccesses {
+				r.ui.Println(renderSummaryLine(success, colorGreen))
+			}
+			for _, warning := range r.summaryWarnings {
+				r.ui.Println(renderSummaryLine(warning, colorYellow))
+			}
+			r.ui.Println(renderSummaryLine("failed to inspect destination server state", colorRed))
 			r.ui.Println(renderSummaryFooter())
 		}
 		if consoleLevelEnabled(r.cfg.LogLevel, "debug") {
@@ -162,21 +173,22 @@ func (r *remoteRunner) printRemoteSummary(ctx context.Context, source SourceData
 	defer loaded.cleanup()
 
 	diffs := compareSourceToRemote(source, loaded.Data, scope)
-	if len(diffs) == 0 && len(r.failures) == 0 && workflowErr == nil {
-		if consoleLevelEnabled(r.cfg.LogLevel, "info") {
-			r.ui.Println(renderSummaryBannerBlock(summaryStateSuccess))
-			r.ui.Println(renderSummaryFooter())
-		}
+	if len(diffs) == 0 && len(r.failures) == 0 && workflowErr == nil && len(r.summaryWarnings) == 0 && len(r.summarySuccesses) == 0 {
 		return
 	}
 
-	state := summaryStateFromOutcome(r.failures, workflowErr)
+	state := summaryStateFromOutcome(r.failures, r.summaryWarnings, workflowErr)
 	if consoleLevelEnabled(r.cfg.LogLevel, "info") || (state == summaryStateError && consoleLevelEnabled(r.cfg.LogLevel, "error")) {
-		r.ui.Println(renderSummaryBannerBlock(state))
+		r.ui.Println(renderSummaryBannerBlock(state, sourceLabel, destLabel))
 	}
-	for _, failure := range r.failures {
-		if consoleLevelEnabled(r.cfg.LogLevel, "error") {
-			r.ui.Println(renderSummaryLine(fmt.Sprintf("%s: %s", failure.Action, failure.Reason), colorRed))
+	for _, success := range r.summarySuccesses {
+		if consoleLevelEnabled(r.cfg.LogLevel, "info") {
+			r.ui.Println(renderSummaryLine(success, colorGreen))
+		}
+	}
+	for _, warning := range r.summaryWarnings {
+		if consoleLevelEnabled(r.cfg.LogLevel, "warn") {
+			r.ui.Println(renderSummaryLine(warning, colorYellow))
 		}
 	}
 	for _, diff := range diffs {
@@ -184,19 +196,27 @@ func (r *remoteRunner) printRemoteSummary(ctx context.Context, source SourceData
 			r.ui.Println(renderSummaryLine(fmt.Sprintf("%s missing on destination side: %s", diff.title, strings.Join(diff.values, ", ")), colorYellow))
 		}
 	}
+	for _, failure := range r.failures {
+		if consoleLevelEnabled(r.cfg.LogLevel, "error") {
+			r.ui.Println(renderSummaryLine(fmt.Sprintf("%s: %s", failure.Action, failure.Reason), colorRed))
+		}
+	}
 	if consoleLevelEnabled(r.cfg.LogLevel, "info") || (state == summaryStateError && consoleLevelEnabled(r.cfg.LogLevel, "error")) {
 		r.ui.Println(renderSummaryFooter())
 	}
 }
 
-func summaryStateFromOutcome(failures []remoteFailure, workflowErr error) summaryState {
+func summaryStateFromOutcome(failures []remoteFailure, warnings []string, workflowErr error) summaryState {
 	if len(failures) > 0 || workflowErr != nil {
 		return summaryStateError
 	}
-	return summaryStateWarning
+	if len(warnings) > 0 {
+		return summaryStateWarning
+	}
+	return summaryStateSuccess
 }
 
-func renderSummaryBanner(state summaryState) string {
+func renderSummaryBanner(state summaryState, sourceLabel string, destLabel string) string {
 	color := colorGreen
 	switch state {
 	case summaryStateWarning:
@@ -205,17 +225,20 @@ func renderSummaryBanner(state summaryState) string {
 		color = colorRed
 	}
 
-	separator := formatTitle("# ================================================", true)
+	separator := formatTitle("# =============================================================================", true)
 	center := formatTitle("# ", true) + color + "SUMMARY" + colorReset
+	if sourceLabel != "" || destLabel != "" {
+		center += summaryContextSuffix(sourceLabel, destLabel)
+	}
 	return separator + "\n" + center + "\n" + separator
 }
 
-func renderSummaryBannerBlock(state summaryState) string {
-	return "\n" + renderSummaryBanner(state)
+func renderSummaryBannerBlock(state summaryState, sourceLabel string, destLabel string) string {
+	return "\n" + renderSummaryBanner(state, sourceLabel, destLabel)
 }
 
 func renderSummaryFooter() string {
-	return formatTitle("# ================================================", true)
+	return formatTitle("# =============================================================================", true)
 }
 
 func renderSummaryLine(text string, suffixColor string) string {
@@ -224,6 +247,20 @@ func renderSummaryLine(text string, suffixColor string) string {
 		return prefix + text
 	}
 	return prefix + colorizeColonSuffix(text, suffixColor)
+}
+
+func summaryContextSuffix(sourceLabel string, destLabel string) string {
+	parts := make([]string, 0, 4)
+	if sourceLabel != "" {
+		parts = append(parts, "local", sourceLabel)
+	}
+	if destLabel != "" {
+		parts = append(parts, "to", destLabel)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, " ") + ")"
 }
 
 type remoteDiff struct {

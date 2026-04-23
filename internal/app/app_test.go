@@ -267,6 +267,26 @@ func TestLocalBackupDirsUseUserHome(t *testing.T) {
 	}
 }
 
+func TestInternalLogEnabledRequiresExplicitLogFlag(t *testing.T) {
+	t.Parallel()
+
+	appWithoutExplicitLog := &App{
+		cfg:    Config{LogLevel: "debug"},
+		logger: slog.Default(),
+	}
+	if appWithoutExplicitLog.internalLogEnabled() {
+		t.Fatalf("expected internal logging to stay disabled without explicit --log")
+	}
+
+	appWithExplicitLog := &App{
+		cfg:    Config{LogLevel: "debug", LogExplicit: true},
+		logger: slog.Default(),
+	}
+	if !appWithExplicitLog.internalLogEnabled() {
+		t.Fatalf("expected internal logging to be enabled with explicit --log")
+	}
+}
+
 func TestRenderOrderedListOutputShowsNoDifferencesMessageForEmptyCommands(t *testing.T) {
 	t.Parallel()
 
@@ -275,6 +295,50 @@ func TestRenderOrderedListOutputShowsNoDifferencesMessageForEmptyCommands(t *tes
 
 	if !strings.Contains(output, "No differences were found. Nothing to sync.") {
 		t.Fatalf("expected no-differences message, got:\n%s", output)
+	}
+}
+
+func TestRenderOrderedListOutputKeepsDBUsersOnlyInLastScopeOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app := &App{}
+	data := SourceData{
+		DBUsers:   []DBUser{{ID: "1", Name: "dbuser", Server: "MySQL"}},
+		DBServers: []DBServer{{ID: "1", Name: "MySQL"}},
+	}
+
+	output := app.renderOrderedListOutput(data, []string{"users", "databases"}, nil)
+
+	if count := strings.Count(output, "db users:"); count != 1 {
+		t.Fatalf("expected db users section once, got %d\n%s", count, output)
+	}
+	dbUsersIndex := strings.Index(output, "db users:")
+	dbServersIndex := strings.Index(output, "database servers:")
+	if dbUsersIndex < 0 || dbServersIndex < 0 || dbUsersIndex < dbServersIndex {
+		t.Fatalf("expected db users section after database servers\n%s", output)
+	}
+}
+
+func TestReorderDestCommandGroupsPlacesDNSBetweenUsersAndFTPUsers(t *testing.T) {
+	t.Parallel()
+
+	groups := []CommandGroup{
+		{Title: "packages (email)", Commands: []string{"pkg"}},
+		{Title: "users", Commands: []string{"user"}},
+		{Title: "ftp users", Commands: []string{"ftp"}},
+		{Title: "web sites", Commands: []string{"site"}},
+		{Title: "dns", Commands: []string{"dns"}},
+	}
+
+	got := reorderDestCommandGroups(groups)
+	wantTitles := []string{"packages (email)", "users", "dns", "ftp users", "web sites"}
+	if len(got) != len(wantTitles) {
+		t.Fatalf("unexpected reordered groups: %#v", got)
+	}
+	for i, want := range wantTitles {
+		if got[i].Title != want {
+			t.Fatalf("reorderDestCommandGroups() titles = %#v, want %v", got, wantTitles)
+		}
 	}
 }
 

@@ -25,6 +25,16 @@ type CommandBuildOptions struct {
 	NoDeletePackages bool
 }
 
+type dbCredential struct {
+	Name     string
+	Password string
+}
+
+type dbCredentialResolver struct {
+	exact     map[string]dbCredential
+	remaining map[string][]dbCredential
+}
+
 func buildCommands(data SourceData, scope string, options CommandBuildOptions) ([]CommandGroup, []string) {
 	return buildCommandsForScopes(data, commandScopesFromListMode(scope), options)
 }
@@ -50,7 +60,8 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 			groups = append(groups, packageGroups...)
 			warnings = append(warnings, packageWarnings...)
 		case "users":
-			groupCommands := make([]string, 0)
+			userCommands := make([]string, 0)
+			ftpCommands := make([]string, 0)
 			for _, item := range data.Users {
 				if strings.EqualFold(strings.TrimSpace(item.Name), "root") {
 					continue
@@ -69,7 +80,7 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 				if item.Backup != "" {
 					params["backup"] = item.Backup
 				}
-				groupCommands = append(groupCommands, buildMgrctlCommand("user.edit", params))
+				userCommands = append(userCommands, buildMgrctlCommand("user.edit", params))
 			}
 			for _, item := range data.FTPUsers {
 				password := item.Password
@@ -81,7 +92,7 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 					password = generated
 					warnings = append(warnings, fmt.Sprintf("FTP user %s password was not available, generated a random password for commands.", item.Name))
 				}
-				groupCommands = append(groupCommands, buildMgrctlCommand("ftp.user.edit", map[string]string{
+				ftpCommands = append(ftpCommands, buildMgrctlCommand("ftp.user.edit", map[string]string{
 					"confirm": password,
 					"home":    firstNonEmpty(item.Home, "/"),
 					"name":    item.Name,
@@ -90,7 +101,8 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 					"sok":     "ok",
 				}))
 			}
-			appendGroup("users", groupCommands)
+			appendGroup("users", userCommands)
+			appendGroup("ftp users", ftpCommands)
 		case "webdomains":
 			certCommands := make([]string, 0)
 			groupCommands := make([]string, 0)
@@ -153,13 +165,13 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 				groupCommands = append(groupCommands, buildMgrctlCommand("db.server.edit", params))
 			}
 
-			dbPasswords := make(map[string]string, len(data.DBUsers))
-			for _, item := range data.DBUsers {
-				dbPasswords[item.Server+"::"+item.Name] = item.Password
-			}
+			credentials := buildDBCredentials(data.DBUsers)
 
 			for _, item := range data.Databases {
-				password := dbPasswords[item.Server+"::"+item.Name]
+				username, password := credentials.resolve(item.Server, item.Name)
+				if strings.TrimSpace(username) == "" {
+					username = item.Name
+				}
 				if strings.TrimSpace(password) == "" {
 					generated, err := randomPassword(16)
 					if err != nil {
@@ -177,7 +189,7 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 					"remote_access": "off",
 					"server":        item.Server,
 					"sok":           "ok",
-					"username":      item.Name,
+					"username":      username,
 				}))
 			}
 
@@ -185,18 +197,21 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 		case "email":
 			groupCommands := make([]string, 0)
 			for _, item := range data.EmailDomains {
-				groupCommands = append(groupCommands, buildMgrctlCommand("emaildomain.edit", map[string]string{
+				params := map[string]string{
 					"defaction":    "ignore",
 					"dkim":         "on",
 					"dmarc":        "on",
-					"ipsrc":        "auto",
 					"name":         item.Name,
 					"owner":        item.Owner,
-					"secure":       "off",
-					"secure_alias": "mail." + item.Name,
+					"secure":       firstNonEmpty(item.Secure, "off"),
+					"secure_alias": firstNonEmpty(item.SecureAlias, "mail."+item.Name),
 					"sok":          "ok",
 					"ssl_name":     "selfsigned",
-				}))
+				}
+				if strings.EqualFold(strings.TrimSpace(item.Secure), "on") {
+					params["email"] = "admin@" + item.Name
+				}
+				groupCommands = append(groupCommands, buildMgrctlCommand("emaildomain.edit", params))
 			}
 
 			for _, item := range data.EmailBoxes {
@@ -248,6 +263,60 @@ func flattenCommandGroups(groups []CommandGroup) []string {
 		commands = append(commands, group.Commands...)
 	}
 	return commands
+}
+
+func buildDBCredentials(values []DBUser) dbCredentialResolver {
+	resolver := dbCredentialResolver{
+		exact:     make(map[string]dbCredential, len(values)),
+		remaining: map[string][]dbCredential{},
+	}
+	for _, item := range values {
+		server := strings.TrimSpace(item.Server)
+		name := strings.TrimSpace(item.Name)
+		if server == "" || name == "" {
+			continue
+		}
+		key := server + "::" + name
+		credential := dbCredential{Name: name, Password: item.Password}
+		resolver.exact[key] = credential
+		resolver.remaining[server] = append(resolver.remaining[server], credential)
+	}
+	for server, credentials := range resolver.remaining {
+		sort.SliceStable(credentials, func(i, j int) bool {
+			return strings.ToLower(credentials[i].Name) < strings.ToLower(credentials[j].Name)
+		})
+		resolver.remaining[server] = credentials
+	}
+	return resolver
+}
+
+func (r *dbCredentialResolver) resolve(server string, databaseName string) (string, string) {
+	server = strings.TrimSpace(server)
+	databaseName = strings.TrimSpace(databaseName)
+	if credential, ok := r.exact[server+"::"+databaseName]; ok {
+		r.consume(server, credential.Name)
+		return credential.Name, credential.Password
+	}
+	return "", ""
+}
+
+func (r *dbCredentialResolver) consume(server string, name string) {
+	remaining := r.remaining[server]
+	if len(remaining) == 0 {
+		return
+	}
+	filtered := remaining[:0]
+	for _, credential := range remaining {
+		if strings.EqualFold(credential.Name, name) {
+			continue
+		}
+		filtered = append(filtered, credential)
+	}
+	if len(filtered) == 0 {
+		delete(r.remaining, server)
+		return
+	}
+	r.remaining[server] = filtered
 }
 
 func userEditParams(name string, password string, preset string, limitProps map[string]string) map[string]string {

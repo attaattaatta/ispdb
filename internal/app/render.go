@@ -207,6 +207,22 @@ func renderPlainRows(rows [][]string) string {
 	return builder.String()
 }
 
+func renderPlainRowsCompact(rows [][]string) string {
+	var builder strings.Builder
+	first := true
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		if !first {
+			builder.WriteByte('\n')
+		}
+		first = false
+		builder.WriteString(strings.Join(row, "  "))
+	}
+	return builder.String()
+}
+
 func commandSectionText(groups []CommandGroup, colorize bool, withHeader bool) string {
 	return commandSectionTextWithHeader(groups, colorize, withHeader, "commands to run at remote server:")
 }
@@ -295,7 +311,14 @@ func syncCommandTitle(header string) string {
 func renderCommandGroupTitle(group CommandGroup, colorize bool, annotateDeletes bool) string {
 	title := group.Title + ":"
 	if !colorize {
-		return title
+		isPackageGroup := strings.HasPrefix(group.Title, "packages (")
+		if isPackageGroup {
+			if annotateDeletes && groupHasDeleteCommands(group) && strings.HasSuffix(group.Title, ")") {
+				return "# " + strings.TrimSuffix(group.Title, ")") + ", some delete / remove commands exists)"
+			}
+			return "# " + group.Title
+		}
+		return "# " + title
 	}
 
 	isPackageGroup := strings.HasPrefix(group.Title, "packages (")

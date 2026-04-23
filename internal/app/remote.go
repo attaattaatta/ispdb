@@ -64,6 +64,8 @@ type remoteRunner struct {
 	liteDockerPrepared bool
 	inventory          *remoteInventory
 	failures           []remoteFailure
+	summarySuccesses   []string
+	summaryWarnings    []string
 	printedCommand     bool
 	runOverride        func(context.Context, string, bool) (string, error)
 }
@@ -80,6 +82,7 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 	defer runner.Close()
 	cfg := runner.cfg
 	ui := runner.ui
+	execScopes := destExecutionScopesFromValue(cfg.DestScope)
 	if err := runner.ensureDestinationRoot(ctx); err != nil {
 		return err
 	}
@@ -143,23 +146,27 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 	if consoleLevelEnabled(cfg.LogLevel, "info") {
 		ui.Println("")
 	}
-	packageSteps, packageWarnings := buildPackageSyncSteps(data.Packages, map[string]struct{}{}, packagePlanOptions{
-		TargetOS:         licInfo["os"],
-		TargetPanel:      licInfo["panel_name"],
-		NoDeletePackages: cfg.NoDeletePackages,
-		SkipSatisfied:    false,
-	})
-	packageSteps = uniquePackageSteps(packageSteps)
-	for _, warning := range packageWarnings {
-		runner.warnPackageWarning(warning)
-	}
-	for _, step := range packageSteps {
-		if err := runner.runPackageStepNoUpdate(ctx, step, licInfo["os"]); err != nil {
-			runner.recordFailure(describePackageStep(step.Title), err)
-			if !cfg.Force {
-				return err
+	if hasScope(execScopes, "packages") {
+		packageSteps, packageWarnings := buildPackageSyncSteps(data.Packages, map[string]struct{}{}, packagePlanOptions{
+			TargetOS:         licInfo["os"],
+			TargetPanel:      licInfo["panel_name"],
+			NoDeletePackages: cfg.NoDeletePackages,
+			SkipSatisfied:    false,
+		})
+		packageSteps = uniquePackageSteps(packageSteps)
+		for _, warning := range packageWarnings {
+			runner.warnPackageWarning(warning)
+		}
+		for _, step := range packageSteps {
+			if err := runner.runPackageStepNoUpdate(ctx, step, licInfo["os"]); err != nil {
+				runner.recordFailure(describePackageStep(step.Title), err)
+				if !cfg.Force {
+					return err
+				}
+				runner.warnLine(err.Error())
+			} else {
+				runner.recordSummarySuccess(describePackageStep(step.Title) + ": OK")
 			}
-			runner.warnLine(err.Error())
 		}
 	}
 
@@ -181,6 +188,17 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 		}
 		if runner.primaryIP != "" && !cfg.NoChangeIPAddresses {
 			rewrittenCommand = rewriteCommandForRemoteIP(command, runner.primaryIP)
+		}
+		if adjustedCommand, skipReason, err := runner.prepareExistingMySQLPasswordSync(ctx, data, rewrittenCommand); err != nil {
+			runner.recordFailure(describeRemoteCommand(rewrittenCommand), err)
+			return err
+		} else {
+			rewrittenCommand = adjustedCommand
+			if skipReason != "" {
+				runner.warnLine(skipReason)
+				runner.recordSummaryWarning(skipReason)
+				continue
+			}
 		}
 		skip, skipReason, err := runner.shouldSkipCommand(ctx, rewrittenCommand)
 		if err != nil {
@@ -289,6 +307,7 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 				runner.inventory.applyCommand(rewrittenCommand)
 			}
 			runner.okAction(action)
+			runner.recordSummarySuccess(action + ": OK")
 		}
 	}
 
@@ -401,6 +420,32 @@ func (r *remoteRunner) recordFailure(action string, err error) {
 	})
 }
 
+func (r *remoteRunner) recordSummaryWarning(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	for _, existing := range r.summaryWarnings {
+		if existing == text {
+			return
+		}
+	}
+	r.summaryWarnings = append(r.summaryWarnings, text)
+}
+
+func (r *remoteRunner) recordSummarySuccess(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	for _, existing := range r.summarySuccesses {
+		if existing == text {
+			return
+		}
+	}
+	r.summarySuccesses = append(r.summarySuccesses, text)
+}
+
 func (r *remoteRunner) infoLine(text string) {
 	if consoleLevelEnabled(r.cfg.LogLevel, "info") {
 		r.ui.Info(text)
@@ -424,6 +469,9 @@ func (r *remoteRunner) warnLine(text string) {
 
 func (r *remoteRunner) warnPackageWarning(text string) {
 	r.warnLine(text)
+	if strings.Contains(strings.ToLower(text), "skipped") {
+		r.recordSummaryWarning(text)
+	}
 	if consoleLevelEnabled(r.cfg.LogLevel, "info") && strings.Contains(text, "does not support Docker, package_docker command was skipped.") {
 		r.ui.Println("")
 	}
@@ -445,8 +493,13 @@ func (r *remoteRunner) warnOverwriteBlock(lines ...string) {
 	if needsSpacing {
 		r.ui.Println("")
 	}
+	recorded := false
 	for _, line := range lines {
 		r.warnLine(line)
+		if !recorded {
+			r.recordSummaryWarning(line)
+			recorded = true
+		}
 	}
 	if needsSpacing {
 		r.ui.Println("")
@@ -480,6 +533,25 @@ func (r *remoteRunner) printMonitoringCommand(command string) {
 	if consoleLevelEnabled(r.cfg.LogLevel, "info") || consoleLevelEnabled(r.cfg.LogLevel, "debug") {
 		r.ui.Println("")
 	}
+}
+
+func (r *remoteRunner) logSSHCommandFailure(command string, err error) {
+	if isExpectedProbeFailure(command) {
+		r.logger.Debug("ssh probe command failed", "command", command, "error", err)
+		return
+	}
+	r.logger.Error("ssh command failed", "command", command, "error", err)
+}
+
+func isExpectedProbeFailure(command string) bool {
+	function, params, ok := parseMgrctlCommand(command)
+	if !ok || function != "db.server.edit" {
+		return false
+	}
+	if strings.TrimSpace(params["out"]) != "text" {
+		return false
+	}
+	return strings.TrimSpace(params["elid"]) != ""
 }
 
 func (r *remoteRunner) logCommandRewrite(sourceCommand string, remoteCommand string) {
@@ -747,7 +819,7 @@ func (r *remoteRunner) runWithTrace(ctx context.Context, command string, trace b
 			r.logger.Debug("ssh output", "command", command, "output", output)
 		}
 		if trace && err != nil {
-			r.logger.Error("ssh command failed", "command", command, "error", err)
+			r.logSSHCommandFailure(command, err)
 		}
 		return output, normalizeRemoteCommandError(command, err)
 	}
@@ -781,7 +853,7 @@ func (r *remoteRunner) runWithTrace(ctx context.Context, command string, trace b
 			r.logger.Debug("ssh output", "command", command, "output", string(res.data))
 		}
 		if trace && res.err != nil {
-			r.logger.Error("ssh command failed", "command", command, "error", res.err)
+			r.logSSHCommandFailure(command, res.err)
 		}
 		return string(res.data), normalizeRemoteCommandError(command, res.err)
 	}
@@ -1378,6 +1450,11 @@ func (r *remoteRunner) pruneEntityCommand(ctx context.Context, command string) (
 	if !ok {
 		return command, nil, nil
 	}
+	if function == "emaildomain.edit" {
+		delete(params, "ipsrc")
+		delete(params, "ip")
+		command = buildMgrctlCommand(function, params)
+	}
 	if !supportsFormPruning(function) {
 		return command, nil, nil
 	}
@@ -1896,18 +1973,22 @@ func (r *remoteRunner) ensureSwapfile(ctx context.Context, state remoteSwapState
 	}
 
 	if !state.SwapfileExists {
+		r.infoLine("creating remote file: /swapfile (2 GiB)")
 		if err := r.createRemoteSwapfile(swapfilePath, swapfileSizeBytes); err != nil {
 			return err
 		}
+		r.successLine("creating remote file: /swapfile (2 GiB): OK")
 	}
 	if err := r.sftpClient.Chmod(swapfilePath, 0600); err != nil {
 		return fmt.Errorf("%sfailed to set permissions on %s: %w%s", colorRed, swapfilePath, err, colorReset)
 	}
 
 	if !state.FstabHasSwapfile {
+		r.infoLine("updating /etc/fstab for /swapfile")
 		if err := r.ensureSwapfileFSTabEntry(); err != nil {
 			return err
 		}
+		r.successLine("updating /etc/fstab for /swapfile: OK")
 	}
 
 	if !state.SwapfileActive {
@@ -1936,6 +2017,8 @@ func (r *remoteRunner) createRemoteSwapfile(path string, size int64) error {
 	const chunkSize = 8 * 1024 * 1024
 	buffer := make([]byte, chunkSize)
 	remaining := size
+	writtenTotal := int64(0)
+	nextProgressMark := int64(512 * 1024 * 1024)
 	for remaining > 0 {
 		writeSize := len(buffer)
 		if remaining < int64(writeSize) {
@@ -1949,6 +2032,13 @@ func (r *remoteRunner) createRemoteSwapfile(path string, size int64) error {
 			return fmt.Errorf("%sfailed while writing %s on destination server: short write%s", colorRed, path, colorReset)
 		}
 		remaining -= int64(written)
+		writtenTotal += int64(written)
+		if writtenTotal >= nextProgressMark || remaining == 0 {
+			if consoleLevelEnabled(r.cfg.LogLevel, "info") {
+				r.infoLine(fmt.Sprintf("swapfile write progress: %d MiB / %d MiB", writtenTotal/(1024*1024), size/(1024*1024)))
+			}
+			nextProgressMark += 512 * 1024 * 1024
+		}
 	}
 	return nil
 }
@@ -2559,13 +2649,6 @@ func (r *remoteRunner) shouldSkipCommand(ctx context.Context, command string) (b
 					return true, fmt.Sprintf("web site %s already exists on remote side, skipped. Run again with --overwrite to modify it.", strings.TrimSpace(params["site_name"])), nil
 				}
 			}
-		case "db.server.edit":
-			name := strings.ToLower(strings.TrimSpace(params["name"]))
-			if name != "" {
-				if _, ok := r.inventory.dbServers[name]; ok {
-					return true, fmt.Sprintf("DB server %s already exists on remote side, skipped. Run again with --overwrite to modify it.", strings.TrimSpace(params["name"])), nil
-				}
-			}
 		case "db.edit":
 			key := databaseInventoryKey(params["name"], params["server"])
 			if key != "::" {
@@ -2603,16 +2686,79 @@ func (r *remoteRunner) shouldSkipCommand(ctx context.Context, command string) (b
 		if name == "" {
 			return false, "", nil
 		}
+		if strings.EqualFold(name, "MySQL") {
+			return false, "", nil
+		}
 		output, err := r.run(ctx, buildMgrctlCommand("db.server.edit", map[string]string{
 			"elid": name,
 			"out":  "text",
 		}))
 		if err == nil && strings.Contains(output, "elid="+name) {
-			return true, "DB server already exists on remote side, skipped.", nil
+			return true, fmt.Sprintf("DB server %s already exists on remote side, skipped. Run again with --overwrite to modify it.", name), nil
 		}
 	}
 
 	return false, "", nil
+}
+
+func (r *remoteRunner) prepareExistingMySQLPasswordSync(ctx context.Context, data SourceData, command string) (string, string, error) {
+	function, params, ok := parseMgrctlCommand(command)
+	if !ok || function != "db.server.edit" {
+		return command, "", nil
+	}
+	name := strings.TrimSpace(params["name"])
+	if !strings.EqualFold(name, "MySQL") {
+		return command, "", nil
+	}
+	exists, err := r.remoteDBServerExists(ctx, name)
+	if err != nil {
+		return "", "", err
+	}
+	if !exists {
+		return command, "", nil
+	}
+	for _, item := range data.DBServers {
+		if !strings.EqualFold(strings.TrimSpace(item.Name), name) {
+			continue
+		}
+		if strings.TrimSpace(item.Password) == "" {
+			return command, "DB server MySQL already exists on remote side, source password was not available, skipped.", nil
+		}
+		host := firstNonEmpty(strings.TrimSpace(item.Host), strings.TrimSpace(params["host"]), "localhost")
+		username := firstNonEmpty(strings.TrimSpace(item.Username), strings.TrimSpace(params["username"]), "root")
+		adjusted := buildMgrctlCommand("db.server.edit", map[string]string{
+			"elid":            name,
+			"host":            host,
+			"name":            name,
+			"username":        username,
+			"password":        item.Password,
+			"change_password": "on",
+			"sok":             "ok",
+		})
+		r.infoLine("DB server MySQL already exists on remote side, syncing password from source.")
+		return adjusted, "", nil
+	}
+	return command, "DB server MySQL already exists on remote side, source password was not available, skipped.", nil
+}
+
+func (r *remoteRunner) remoteDBServerExists(ctx context.Context, name string) (bool, error) {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return false, nil
+	}
+	if r.inventory != nil {
+		if _, ok := r.inventory.dbServers[normalized]; ok {
+			return true, nil
+		}
+	}
+	output, err := r.run(ctx, buildMgrctlCommand("db.server.edit", map[string]string{
+		"elid": name,
+		"out":  "text",
+	}))
+	if err != nil {
+		return false, nil
+	}
+	return strings.Contains(output, "elid="+name), nil
 }
 
 func parseMgrctlCommand(command string) (string, map[string]string, bool) {
@@ -2688,7 +2834,7 @@ func rewriteCommandForRemoteIP(command string, ip string) string {
 		params["site_ssl_cert"] = firstNonEmpty(strings.TrimSpace(params["site_name"]), "selfsigned")
 	case "emaildomain.edit":
 		delete(params, "ip")
-		params["ipsrc"] = "auto"
+		delete(params, "ipsrc")
 	case "domain.edit":
 		params["ip"] = ip
 	}

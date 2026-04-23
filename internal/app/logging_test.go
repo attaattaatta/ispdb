@@ -27,7 +27,7 @@ func TestConsoleHandlerAddsBlankLineAfterInfo(t *testing.T) {
 	}
 }
 
-func TestConsoleHandlerDoesNotAddBlankLineAfterWarn(t *testing.T) {
+func TestConsoleHandlerAddsBlankLineAfterWarn(t *testing.T) {
 	t.Parallel()
 
 	var out bytes.Buffer
@@ -39,11 +39,8 @@ func TestConsoleHandlerDoesNotAddBlankLineAfterWarn(t *testing.T) {
 	}
 
 	got := out.String()
-	if strings.HasSuffix(got, "\n\n") {
-		t.Fatalf("did not expect extra blank line after warn log, got %q", got)
-	}
-	if !strings.HasSuffix(got, "\n") {
-		t.Fatalf("expected warn log to end with a single newline, got %q", got)
+	if !strings.HasSuffix(got, "\n\n") {
+		t.Fatalf("expected warn log to end with an extra blank line, got %q", got)
 	}
 }
 
@@ -62,6 +59,32 @@ func TestConsoleHandlerColorsErrorLevel(t *testing.T) {
 	want := "level=" + colorRed + "ERROR" + colorReset
 	if !strings.Contains(got, want) {
 		t.Fatalf("expected colored error level, got %q", got)
+	}
+}
+
+func TestFileHandlerAddsBlankLineAfterInfo(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	handler := newFileHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug})
+
+	record := slog.NewRecord(testTime(), slog.LevelInfo, "building source data model", 0)
+	if err := handler.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() returned error: %v", err)
+	}
+
+	got := out.String()
+	if !strings.HasSuffix(got, "\n\n") {
+		t.Fatalf("expected file log to end with an extra blank line, got %q", got)
+	}
+}
+
+func TestParseLogLevelOffSuppressesOutput(t *testing.T) {
+	t.Parallel()
+
+	level := parseLogLevel("off")
+	if level <= slog.LevelError {
+		t.Fatalf("expected off level to be above normal log levels, got %v", level)
 	}
 }
 

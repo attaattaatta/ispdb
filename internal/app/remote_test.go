@@ -90,6 +90,18 @@ func TestWarnPackageWarningAddsTrailingBlankLineAtInfoForDockerSkip(t *testing.T
 	}
 }
 
+func TestRecordSummarySuccessDeduplicates(t *testing.T) {
+	t.Parallel()
+
+	runner := &remoteRunner{}
+	runner.recordSummarySuccess("adding user alice: OK")
+	runner.recordSummarySuccess("adding user alice: OK")
+
+	if len(runner.summarySuccesses) != 1 {
+		t.Fatalf("expected one deduplicated summary success, got %#v", runner.summarySuccesses)
+	}
+}
+
 func TestPrintLaunchedCommandMirrorsToLogFile(t *testing.T) {
 	t.Parallel()
 
@@ -133,6 +145,29 @@ func TestNormalizeRemoteCommandErrorDetectsTimeoutAndDisconnect(t *testing.T) {
 	disconnectErr := normalizeRemoteCommandError("cmd", errors.New("read tcp 1.2.3.4: broken pipe"))
 	if !strings.Contains(disconnectErr.Error(), "server may have rebooted") {
 		t.Fatalf("expected disconnect normalization, got %v", disconnectErr)
+	}
+}
+
+func TestRunWithTraceLogsDBServerTextProbeFailureAsDebug(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	runner := &remoteRunner{
+		logger: logger,
+		runOverride: func(ctx context.Context, command string, trace bool) (string, error) {
+			return "", errors.New("Process exited with status 1")
+		},
+	}
+
+	_, _ = runner.run(context.Background(), "/usr/local/mgr5/sbin/mgrctl -m ispmgr db.server.edit elid=mysql-8.4 out=text")
+
+	got := logs.String()
+	if strings.Contains(got, `level=ERROR msg="ssh command failed"`) {
+		t.Fatalf("expected no error-level ssh command failure for db.server text probe, got %q", got)
+	}
+	if !strings.Contains(got, `level=DEBUG msg="ssh probe command failed"`) {
+		t.Fatalf("expected debug-level probe failure log, got %q", got)
 	}
 }
 
@@ -188,6 +223,69 @@ func TestConnectRemoteRunnerUsesHooksAndAnnouncesConnection(t *testing.T) {
 	}
 	if !strings.Contains(got, "connecting: OK\n") {
 		t.Fatalf("expected success line, got %q", got)
+	}
+}
+
+func TestPrepareExistingMySQLPasswordSyncBuildsChangePasswordCommand(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	runner := &remoteRunner{
+		cfg: Config{LogLevel: "info"},
+		ui:  &UI{out: &out, err: &out},
+		inventory: &remoteInventory{
+			dbServers: map[string]struct{}{"mysql": {}},
+		},
+	}
+
+	command, skipReason, err := runner.prepareExistingMySQLPasswordSync(context.Background(), SourceData{
+		DBServers: []DBServer{{Name: "MySQL", Host: "localhost", Username: "root", Password: "secret123"}},
+	}, "/usr/local/mgr5/sbin/mgrctl -m ispmgr db.server.edit name=MySQL sok=ok host=localhost password=generated remote_access=off type=mysql username=root")
+	if err != nil {
+		t.Fatalf("prepareExistingMySQLPasswordSync() returned error: %v", err)
+	}
+	if skipReason != "" {
+		t.Fatalf("expected no skipReason, got %q", skipReason)
+	}
+	for _, want := range []string{
+		"db.server.edit",
+		"elid=MySQL",
+		"name=MySQL",
+		"host=localhost",
+		"username=root",
+		"password=secret123",
+		"change_password=on",
+	} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("expected adjusted command to contain %q, got %q", want, command)
+		}
+	}
+	got := stripANSI(out.String())
+	if !strings.Contains(got, "DB server MySQL already exists on remote side, syncing password from source.") {
+		t.Fatalf("expected info message, got %q", got)
+	}
+}
+
+func TestPrepareExistingMySQLPasswordSyncSkipsWhenSourcePasswordUnavailable(t *testing.T) {
+	t.Parallel()
+
+	runner := &remoteRunner{
+		inventory: &remoteInventory{
+			dbServers: map[string]struct{}{"mysql": {}},
+		},
+	}
+
+	command, skipReason, err := runner.prepareExistingMySQLPasswordSync(context.Background(), SourceData{
+		DBServers: []DBServer{{Name: "MySQL", Host: "localhost", Username: "root", Password: ""}},
+	}, "/usr/local/mgr5/sbin/mgrctl -m ispmgr db.server.edit name=MySQL sok=ok host=localhost password=generated remote_access=off type=mysql username=root")
+	if err != nil {
+		t.Fatalf("prepareExistingMySQLPasswordSync() returned error: %v", err)
+	}
+	if command == "" {
+		t.Fatalf("expected original command to be returned")
+	}
+	if !strings.Contains(skipReason, "source password was not available") {
+		t.Fatalf("expected source password skip reason, got %q", skipReason)
 	}
 }
 

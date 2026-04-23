@@ -2,7 +2,7 @@
 
 `ispdb` это CLI-утилита для Linux, предназначенная для работы с SQLite-файлами ispmanager и SQL-дампами. Она умеет расшифровывать поддерживаемые пароли с помощью `ispmgr.pem`, выводить данные в читаемом виде, экспортировать таблицы, генерировать команды для API ispmanager и выполнять миграцию на целевой сервер через SSH. 
 
-Написана для удобства восстановления сущностей панели на другой сервер, когда локальная панель умерла, но также добавлен функционал массового создания, правки и удаления сущностей на локальном сервере.
+Написана для удобства восстановления сущностей панели управления на другой сервер, когда локальная панель умерла, но также добавлен функционал массового создания, правки и удаления сущностей на локальном сервере.
 
 Для написания практически всего кода использовался OpenAI Codex 5.4
 
@@ -32,7 +32,7 @@ curl -fsSL "$(curl -fsSL http://bit.ly/4mx1gcL | grep browser_download_url | gre
 ## Примеры
 ```
 #./ispdb -h
-ispmanager 5+ db dump and export tool version 0.4.0-beta
+ispmanager 5+ db dump and export tool version 0.4.3-beta
 
 
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⠴⠒⠊⠉⠉⠉⠒⠲⢤⣀⠀⠀⠀⠀⠀⣀⣤⠤⠶⠒⠶⠤⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -73,11 +73,8 @@ Optional private key for passwords decryption.
 -l, --list [all|commands|packages|webdomains|databases|users|email|dns]
 Show local data in console. Comma-separated scopes are supported and displayed in the same order. Together with --dest it shows remote panel data for [all|packages|webdomains|databases|users|email|dns].
 
--e, --export <file>
-Write export to file.
-
---export-data [all|data|commands|packages|webdomains|databases|users|email|dns]
-Choose what to export.
+-e, --export [all|data|commands|packages|webdomains|databases|users|email|dns] <file>
+Write export to file. Comma-separated scopes are supported and exported in the same order. If scope is omitted, the current --list scope is used.
 
 --format [text|csv|json]
 Choose export file format. Commands export supports only text.
@@ -157,8 +154,9 @@ Open the default source automatically or print generated remote commands.
 Export:
 Export loaded data or generated commands to text, CSV, or JSON files.
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db --list users
-./ispdb -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-data.txt --export-data data
-./ispdb -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export /root/ispdb-commands.txt --export-data commands
+./ispdb -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export data /root/ispdb-data.txt
+./ispdb -f /path/to/mysqldump/ispmgr.sql -k /usr/local/mgr5/etc/ispmgr.pem --export commands /root/ispdb-commands.txt
+./ispdb -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --export users,commands,dns /root/ispdb-mixed.txt
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list dns --export /root/ispdb-dns.csv --format csv --csv-delimiter ';'
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list email --export /root/ispdb-email.json --format json
 ./ispdb -f /usr/local/mgr5/etc/ispmgr.db -k /usr/local/mgr5/etc/ispmgr.pem --list webdomains --export /root/ispdb-webdomains --format text --columns name

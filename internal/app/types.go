@@ -80,12 +80,14 @@ type DBUser struct {
 }
 
 type EmailDomain struct {
-	ID      string
-	Name    string
-	NameIDN string
-	IP      string
-	Active  string
-	Owner   string
+	ID          string
+	Name        string
+	NameIDN     string
+	IP          string
+	Active      string
+	Owner       string
+	Secure      string
+	SecureAlias string
 }
 
 type EmailBox struct {

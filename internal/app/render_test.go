@@ -207,6 +207,22 @@ func TestCommandSectionTextKeepsExportCommandsCompact(t *testing.T) {
 	}
 }
 
+func TestCommandSectionTextPrefixesGroupTitlesInExportToo(t *testing.T) {
+	t.Parallel()
+
+	got := commandSectionText([]CommandGroup{
+		{Title: "packages (web)", Commands: []string{"pkg-cmd"}},
+		{Title: "email", Commands: []string{"mail-cmd"}},
+	}, false, false)
+
+	if !strings.Contains(got, "# packages (web)\n") {
+		t.Fatalf("expected export output to keep package comment title, got:\n%s", got)
+	}
+	if !strings.Contains(got, "# email:\n") {
+		t.Fatalf("expected export output to keep regular comment title, got:\n%s", got)
+	}
+}
+
 func stripANSI(value string) string {
 	re := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	return re.ReplaceAllString(value, "")

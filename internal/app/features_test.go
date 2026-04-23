@@ -373,7 +373,7 @@ func TestBuildPackageSyncStepsAlwaysKeepsClamAVOffInEmailGroup(t *testing.T) {
 			{ID: "2", Name: "exim"},
 		},
 		map[string]struct{}{
-			"dovecot": {} ,
+			"dovecot": {},
 		},
 		packagePlanOptions{
 			TargetOS:      "Ubuntu 24.04",
@@ -397,6 +397,52 @@ func TestBuildPackageSyncStepsAlwaysKeepsClamAVOffInEmailGroup(t *testing.T) {
 	}
 	if !strings.Contains(emailStep.Command, "package_clamav=off") {
 		t.Fatalf("expected email command to always contain package_clamav=off, got %q", emailStep.Command)
+	}
+}
+
+func TestBuildPackageCommandGroupsIncludeEmailPackagesWhenPresentOnSource(t *testing.T) {
+	t.Parallel()
+
+	groups, warnings := buildPackageCommandGroupsWithCurrent(
+		[]Package{
+			{ID: "1", Name: "exim"},
+			{ID: "2", Name: "dovecot"},
+			{ID: "3", Name: "opendkim"},
+			{ID: "4", Name: "sieve"},
+		},
+		"Ubuntu 24.04",
+		"ispmanager Lite",
+		nil,
+		false,
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	var emailGroup CommandGroup
+	found := false
+	for _, group := range groups {
+		if group.Title == "packages (email)" {
+			emailGroup = group
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected packages (email) group, got %#v", groups)
+	}
+
+	joined := strings.Join(emailGroup.Commands, "\n")
+	for _, want := range []string{
+		"packagegroup_mta=exim",
+		"package_dovecot=on",
+		"package_opendkim=on",
+		"package_sieve=on",
+		"package_clamav=off",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected email package command to contain %q, got %q", want, joined)
+		}
 	}
 }
 

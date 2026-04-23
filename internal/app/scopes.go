@@ -103,6 +103,21 @@ func destScopesFromValue(value string) []string {
 	return scopes
 }
 
+func destExecutionScopesFromValue(value string) []string {
+	scopes := configuredScopeList(value, destModes)
+	if len(scopes) == 0 || hasScope(scopes, "all") {
+		return append([]string{}, dataScopeOrder...)
+	}
+
+	result := make([]string, 0, len(scopes))
+	for _, scope := range dataScopeOrder {
+		if hasScope(scopes, scope) {
+			result = append(result, scope)
+		}
+	}
+	return result
+}
+
 func isRemoteListScopeSet(value string) bool {
 	scopes := configuredScopeList(value, listModes)
 	if len(scopes) == 0 {

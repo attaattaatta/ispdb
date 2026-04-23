@@ -12,7 +12,7 @@ type multiHandler struct {
 	handlers []slog.Handler
 }
 
-type consoleSpacingHandler struct {
+type spacingHandler struct {
 	base slog.Handler
 	out  io.Writer
 }
@@ -57,31 +57,29 @@ func (m multiHandler) WithGroup(name string) slog.Handler {
 	return multiHandler{handlers: handlers}
 }
 
-func (h consoleSpacingHandler) Enabled(ctx context.Context, level slog.Level) bool {
+func (h spacingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.base.Enabled(ctx, level)
 }
 
-func (h consoleSpacingHandler) Handle(ctx context.Context, record slog.Record) error {
+func (h spacingHandler) Handle(ctx context.Context, record slog.Record) error {
 	if err := h.base.Handle(ctx, record); err != nil {
 		return err
 	}
-	if record.Level <= slog.LevelInfo {
-		if _, err := io.WriteString(h.out, "\n"); err != nil {
-			return err
-		}
+	if _, err := io.WriteString(h.out, "\n"); err != nil {
+		return err
 	}
 	return nil
 }
 
-func (h consoleSpacingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return consoleSpacingHandler{
+func (h spacingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return spacingHandler{
 		base: h.base.WithAttrs(attrs),
 		out:  h.out,
 	}
 }
 
-func (h consoleSpacingHandler) WithGroup(name string) slog.Handler {
-	return consoleSpacingHandler{
+func (h spacingHandler) WithGroup(name string) slog.Handler {
+	return spacingHandler{
 		base: h.base.WithGroup(name),
 		out:  h.out,
 	}
@@ -89,8 +87,15 @@ func (h consoleSpacingHandler) WithGroup(name string) slog.Handler {
 
 func newConsoleHandler(out io.Writer, options *slog.HandlerOptions) slog.Handler {
 	colorizedOut := colorizingLogWriter{base: out}
-	return consoleSpacingHandler{
+	return spacingHandler{
 		base: slog.NewTextHandler(colorizedOut, options),
+		out:  out,
+	}
+}
+
+func newFileHandler(out io.Writer, options *slog.HandlerOptions) slog.Handler {
+	return spacingHandler{
+		base: slog.NewTextHandler(out, options),
 		out:  out,
 	}
 }
@@ -122,7 +127,7 @@ func buildLogger(levelName string, logFile string, silent bool) (*slog.Logger, i
 	if err != nil {
 		return nil, nil, err
 	}
-	handlers = append(handlers, slog.NewTextHandler(file, options))
+	handlers = append(handlers, newFileHandler(file, options))
 	if len(handlers) == 1 {
 		return slog.New(handlers[0]), file, nil
 	}
@@ -140,7 +145,7 @@ func parseLogLevel(level string) slog.Level {
 	case "crit":
 		return slog.Level(12)
 	case "off":
-		return slog.LevelInfo
+		return slog.Level(100)
 	default:
 		return slog.LevelInfo
 	}
