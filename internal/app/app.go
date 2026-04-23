@@ -454,7 +454,47 @@ func (a *App) buildRemoteExecutionPreview(ctx context.Context, data SourceData, 
 	}
 
 	groups, _ := buildRemoteExecutionPreviewGroups(data, commandScopes, a.cfg, state)
+	if panelInstalled {
+		groups = pruneRemoteExecutionPreviewGroups(ctx, runner, groups)
+	}
 	return remoteExecutionPreview{groups: groups, runner: runner}, nil
+}
+
+func pruneRemoteExecutionPreviewGroups(ctx context.Context, runner *remoteRunner, groups []CommandGroup) []CommandGroup {
+	if runner == nil || len(groups) == 0 {
+		return groups
+	}
+
+	result := make([]CommandGroup, 0, len(groups))
+	for _, group := range groups {
+		prunedGroup := group
+		prunedGroup.Commands = append([]string(nil), group.Commands...)
+		for index, command := range prunedGroup.Commands {
+			function, params, ok := parseMgrctlCommand(command)
+			if !ok {
+				continue
+			}
+			switch {
+			case function == "feature.edit":
+				step := packageSyncStep{
+					Title:   group.Title,
+					Feature: strings.TrimSpace(params["elid"]),
+					Command: command,
+				}
+				prunedStep, err := runner.pruneFeatureStep(ctx, step)
+				if err == nil {
+					prunedGroup.Commands[index] = prunedStep.Command
+				}
+			case supportsFormPruning(function):
+				prunedCommand, _, err := runner.pruneEntityCommand(ctx, command)
+				if err == nil {
+					prunedGroup.Commands[index] = prunedCommand
+				}
+			}
+		}
+		result = append(result, prunedGroup)
+	}
+	return result
 }
 
 func (a *App) printLoadedSource(backupPath string, data SourceData) {
@@ -465,6 +505,11 @@ func (a *App) printLoadedSource(backupPath string, data SourceData) {
 	a.ui.Println("DB format: " + data.Format)
 	if data.PrivateKeyUsed && a.cfg.ISPKey != "" {
 		a.ui.Println("privkey: " + a.cfg.ISPKey)
+	} else if strings.TrimSpace(data.KeyStatusMessage) != "" {
+		a.ui.Println("privkey: " + colorYellow + data.KeyStatusMessage + colorReset)
+		if strings.TrimSpace(data.KeyStatusReason) != "" {
+			a.ui.Println(data.KeyStatusReason)
+		}
 	}
 	a.ui.Println("")
 }

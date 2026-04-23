@@ -9,7 +9,7 @@ import (
 	"ispdb/internal/app"
 )
 
-const version = "0.4.1-beta"
+const version = "0.4.2-beta"
 
 //go:embed internal/ascii/*.txt
 var asciiFS embed.FS

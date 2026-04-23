@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +87,31 @@ func TestWarnPackageWarningAddsTrailingBlankLineAtInfoForDockerSkip(t *testing.T
 	want := "destination panel edition \"ispmanager Lite\" does not support Docker, package_docker command was skipped.\n\n"
 	if got != want {
 		t.Fatalf("warnPackageWarning() info output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintLaunchedCommandMirrorsToLogFile(t *testing.T) {
+	t.Parallel()
+
+	logFile := filepath.Join(t.TempDir(), "ispdb.log")
+	var out bytes.Buffer
+	runner := &remoteRunner{
+		cfg: Config{LogLevel: "info", LogFile: logFile},
+		ui:  &UI{out: &out, err: &out},
+	}
+
+	runner.printLaunchedCommand("/usr/local/mgr5/sbin/mgrctl -m ispmgr feature.update sok=ok")
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("failed to read mirrored log file: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, `level=INFO`) {
+		t.Fatalf("expected mirrored info level in log, got %q", got)
+	}
+	if !strings.Contains(got, `msg="pushing command: /usr/local/mgr5/sbin/mgrctl -m ispmgr feature.update sok=ok"`) {
+		t.Fatalf("expected mirrored pushing command in log, got %q", got)
 	}
 }
 
@@ -203,6 +230,123 @@ func TestPrintMonitoringCommandShowsFilesOnDebug(t *testing.T) {
 	if !strings.HasSuffix(got, "\n\n") {
 		t.Fatalf("expected trailing blank line, got %q", got)
 	}
+}
+
+func TestPruneFeatureStepKeepsOpenLiteSpeedPHPWhenOpenLiteSpeedIsEnabled(t *testing.T) {
+	t.Parallel()
+
+	runner := &remoteRunner{
+		logger: slog.Default(),
+		runOverride: func(ctx context.Context, command string, trace bool) (string, error) {
+			if strings.Contains(command, "feature.edit") && strings.Contains(command, "out=text") {
+				return strings.Join([]string{
+					"title=Web-server (WWW)",
+					"package_nginx=on",
+					"package_logrotate=on",
+					"package_awstats=on",
+					"package_php=on",
+					"package_php-fpm=on",
+					"elid=web",
+					"package_openlitespeed=off",
+					"package_phpcomposer=off",
+					"package_nginx_modsecurity=off",
+					"package_apache_modsecurity=off",
+					"package_openlitespeed_modsecurity=off",
+					"packagegroup_apache=apache-itk-ubuntu",
+				}, "\n"), nil
+			}
+			return "", nil
+		},
+	}
+
+	step := packageSyncStep{
+		Title:            "packages (web)",
+		Feature:          "web",
+		Command:          "/usr/local/mgr5/sbin/mgrctl -m ispmgr feature.edit sok=ok elid=web package_apache_modsecurity=off package_awstats=on package_logrotate=on package_nginx=off package_nginx_modsecurity=off package_openlitespeed=on package_openlitespeed-php=on package_openlitespeed_modsecurity=off package_php=off package_php-fpm=off package_phpcomposer=off packagegroup_apache=turn_off",
+		ExpectedPackages: []string{"openlitespeed", "openlitespeed-php"},
+	}
+
+	pruned, err := runner.pruneFeatureStep(context.Background(), step)
+	if err != nil {
+		t.Fatalf("pruneFeatureStep() returned error: %v", err)
+	}
+	if !strings.Contains(pruned.Command, "package_openlitespeed-php=on") {
+		t.Fatalf("expected openlitespeed-php param to remain with package_openlitespeed=on, got %q", pruned.Command)
+	}
+	if !containsString(pruned.ExpectedPackages, "openlitespeed") {
+		t.Fatalf("expected openlitespeed to remain in expected packages, got %#v", pruned.ExpectedPackages)
+	}
+	if !containsString(pruned.ExpectedPackages, "openlitespeed-php") {
+		t.Fatalf("expected openlitespeed-php to remain in expected packages with package_openlitespeed=on, got %#v", pruned.ExpectedPackages)
+	}
+}
+
+func TestPruneFeatureStepKeepsSupportedWebOffParamsAgainstDestinationForm(t *testing.T) {
+	t.Parallel()
+
+	runner := &remoteRunner{
+		logger: slog.Default(),
+		runOverride: func(ctx context.Context, command string, trace bool) (string, error) {
+			if strings.Contains(command, "feature.edit") && strings.Contains(command, "out=text") {
+				return strings.Join([]string{
+					"title=Web-server (WWW)",
+					"package_nginx=on",
+					"package_logrotate=on",
+					"package_awstats=on",
+					"package_php=on",
+					"package_php-fpm=on",
+					"package_pagespeed=off",
+					"hide_low_ram_banner=on",
+					"elid=web",
+					"package_openlitespeed=off",
+					"hide_pagespeed=",
+					"package_phpcomposer=off",
+					"package_nginx_modsecurity=off",
+					"package_apache_modsecurity=off",
+					"package_openlitespeed_modsecurity=off",
+					"packagegroup_apache=apache-itk-ubuntu",
+					"saved_filters=",
+				}, "\n"), nil
+			}
+			return "", nil
+		},
+	}
+
+	step := packageSyncStep{
+		Title:   "packages (web)",
+		Feature: "web",
+		Command: "/usr/local/mgr5/sbin/mgrctl -m ispmgr feature.edit sok=ok elid=web package_apache_modsecurity=off package_awstats=on package_logrotate=on package_nginx=off package_nginx_modsecurity=off package_nginx_pagespeed=off package_openlitespeed=on package_openlitespeed-php=on package_openlitespeed_modsecurity=off package_pagespeed=off package_php=off package_php-fpm=off package_phpcomposer=off packagegroup_apache=turn_off",
+	}
+
+	pruned, err := runner.pruneFeatureStep(context.Background(), step)
+	if err != nil {
+		t.Fatalf("pruneFeatureStep() returned error: %v", err)
+	}
+
+	for _, want := range []string{
+		"package_awstats=on",
+		"package_logrotate=on",
+		"package_nginx=off",
+		"package_openlitespeed=on",
+		"package_openlitespeed-php=on",
+		"package_php=off",
+		"package_php-fpm=off",
+		"package_phpcomposer=off",
+		"packagegroup_apache=turn_off",
+	} {
+		if !strings.Contains(pruned.Command, want) {
+			t.Fatalf("expected pruned web command to contain %q, got %q", want, pruned.Command)
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestParseRemoteSwapStateIgnoresZRAMAndDetectsSwapfile(t *testing.T) {
@@ -401,5 +545,49 @@ func TestAltPHPFeaturesBusyDetectsInstallStatusForRequestedVersions(t *testing.T
 	}
 	if altPHPFeaturesBusy(records, map[string]struct{}{"altphp72": {}}) {
 		t.Fatalf("did not expect completed altphp feature to be detected as busy")
+	}
+}
+
+func TestFeatureStepBadStateDetectsRegularFeatureBadState(t *testing.T) {
+	t.Parallel()
+
+	bad, ok := featureStepBadState([]featureRecord{
+		{Name: "web", BadState: "install"},
+	}, "web", nil)
+	if !ok {
+		t.Fatalf("expected badstate to be detected for regular feature")
+	}
+	if bad.Name != "web" || bad.BadState != "install" {
+		t.Fatalf("unexpected badstate info: %#v", bad)
+	}
+}
+
+func TestFeatureStepBadStateDetectsAltPHPBadState(t *testing.T) {
+	t.Parallel()
+
+	bad, ok := featureStepBadState([]featureRecord{
+		{Name: "altphp83", BadState: "install"},
+		{Name: "altphp84", BadState: ""},
+	}, "altphp", map[string]struct{}{"altphp83": {}})
+	if !ok {
+		t.Fatalf("expected badstate to be detected for requested altphp feature")
+	}
+	if bad.Name != "altphp83" || bad.BadState != "install" {
+		t.Fatalf("unexpected altphp badstate info: %#v", bad)
+	}
+}
+
+func TestFirstBadFeatureStateReturnsFirstBadRecord(t *testing.T) {
+	t.Parallel()
+
+	bad, ok := firstBadFeatureState([]featureRecord{
+		{Name: "web", BadState: "install"},
+		{Name: "mysql", BadState: "broken"},
+	})
+	if !ok {
+		t.Fatalf("expected first bad feature state to be found")
+	}
+	if bad.Name != "web" || bad.BadState != "install" {
+		t.Fatalf("unexpected first bad feature state: %#v", bad)
 	}
 }

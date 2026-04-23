@@ -110,20 +110,22 @@ type DNSDomain struct {
 }
 
 type SourceData struct {
-	Format         string
-	SourcePath     string
-	PrivateKeyUsed bool
-	Packages       []Package
-	Users          []User
-	FTPUsers       []FTPUser
-	WebDomains     []WebDomain
-	DBServers      []DBServer
-	Databases      []Database
-	DBUsers        []DBUser
-	EmailDomains   []EmailDomain
-	EmailBoxes     []EmailBox
-	DNSDomains     []DNSDomain
-	Warnings       []string
+	Format           string
+	SourcePath       string
+	PrivateKeyUsed   bool
+	KeyStatusMessage string
+	KeyStatusReason  string
+	Packages         []Package
+	Users            []User
+	FTPUsers         []FTPUser
+	WebDomains       []WebDomain
+	DBServers        []DBServer
+	Databases        []Database
+	DBUsers          []DBUser
+	EmailDomains     []EmailDomain
+	EmailBoxes       []EmailBox
+	DNSDomains       []DNSDomain
+	Warnings         []string
 }
 
 type Section struct {

@@ -1,10 +1,20 @@
 # Changelog
 
+## 0.4.2-beta
+
+- improved `--dest` execution flow by creating the destination backup before panel installation, stopping redundant `license.info` polling once the panel is ready, and streaming installer output to the console/log as it arrives
+- removed `feature.update` from both destination execution and command preview/list output
+- aligned destination package previews with the real execution form by pruning preview commands through the destination panel forms before confirmation, while preserving `package_openlitespeed-php=on` whenever `package_openlitespeed=on` is part of the same `web` package command so preview and real pushes stay consistent
+- fail fast during `--dest` package waits when `mgrctl feature` reports `badstate=*` for the current package group or feature; without `--force` the sync now stops immediately and points to `/usr/local/mgr5/var/pkg.log`
+- execute destination package installation commands from the full source package plan during `--dest` instead of recalculating a smaller runtime package diff from the current destination state, while still normalizing package arguments for the target OS and panel form
+- mirror high-level remote progress lines such as `pushing command:`, `monitoring command:`, `connecting:`, `backup path on remote side:`, and action `OK`/`FAIL` statuses into the configured log file
+- when an `ispmgr.pem` key path is provided but the key cannot be loaded, keep `privkey:` in the header, show the warning in yellow, and print the raw load failure reason on the next line
+
 ## 0.4.1-beta
 
 - updated `--list` and `--dest --list` output to hide internal columns, sort displayed rows by `name`, rename mailbox `used` to `used_mb`, trim PostgreSQL `savedver` to a shorter display form, and use the requested column order for `users`, `ftp users`, `web domains`, `databases`, and `email boxes`
 - added mailbox forwarding targets from `email_forward` to `email boxes`
-- stopped showing or reusing password-column values anywhere when `-k, --key` is missing or the private key could not be loaded, and now show `privkey:` only when the key was loaded successfully
+- stopped showing or reusing password-column values anywhere when `-k, --key` is missing or the private key could not be loaded, and now show `privkey:` with a yellow explanatory warning when the key is missing or failed to load
 
 ## 0.4.0-beta
 

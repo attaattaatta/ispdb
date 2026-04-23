@@ -127,8 +127,11 @@ func TestBuildSourceDataIgnoresPasswordValuesWithoutPrivateKey(t *testing.T) {
 	if got := data.EmailBoxes[0].Password; got != "" {
 		t.Fatalf("expected mailbox password to be hidden, got %q", got)
 	}
-	if len(data.Warnings) == 0 || !strings.Contains(data.Warnings[0], "password values were ignored") {
-		t.Fatalf("expected warning about ignored password values, got %v", data.Warnings)
+	if !strings.Contains(data.KeyStatusMessage, "password values were ignored") {
+		t.Fatalf("expected key status warning about ignored password values, got %q", data.KeyStatusMessage)
+	}
+	if data.KeyStatusReason != "" {
+		t.Fatalf("expected no key status reason when key path is not provided, got %q", data.KeyStatusReason)
 	}
 }
 
@@ -155,7 +158,10 @@ func TestBuildSourceDataIgnoresPasswordValuesWhenPrivateKeyLoadFails(t *testing.
 	if got := data.DBServers[0].Password; got != "" {
 		t.Fatalf("expected db server password to be hidden, got %q", got)
 	}
-	if len(data.Warnings) == 0 || !strings.Contains(data.Warnings[0], "could not be loaded") {
-		t.Fatalf("expected key load warning, got %v", data.Warnings)
+	if !strings.Contains(data.KeyStatusMessage, "could not be loaded") {
+		t.Fatalf("expected key load warning, got %q", data.KeyStatusMessage)
+	}
+	if strings.TrimSpace(data.KeyStatusReason) == "" {
+		t.Fatalf("expected key load failure reason to be preserved")
 	}
 }

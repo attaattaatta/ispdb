@@ -71,6 +71,11 @@ func runRemoteListWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg
 	ui.Println("DB format: " + loaded.Data.Format)
 	if loaded.KeyDisplay != "" {
 		ui.Println("privkey: " + loaded.KeyDisplay)
+	} else if strings.TrimSpace(loaded.Data.KeyStatusMessage) != "" {
+		ui.Println("privkey: " + colorYellow + loaded.Data.KeyStatusMessage + colorReset)
+		if strings.TrimSpace(loaded.Data.KeyStatusReason) != "" {
+			ui.Println(loaded.Data.KeyStatusReason)
+		}
 	}
 	ui.Println("")
 	for _, warning := range loaded.Data.Warnings {

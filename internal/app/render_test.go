@@ -64,9 +64,6 @@ func TestCommandSectionTextUsesRemoteHeader(t *testing.T) {
 	if !strings.Contains(got, "commands to run at remote server:") {
 		t.Fatalf("expected remote-server header, got:\n%s", got)
 	}
-	if !strings.Contains(got, featureUpdateCommand()) {
-		t.Fatalf("expected shared feature.update before package commands, got:\n%s", got)
-	}
 	if !strings.Contains(got, "\n\n# users:\n") {
 		t.Fatalf("expected blank line after header, got:\n%s", got)
 	}
@@ -83,9 +80,6 @@ func TestCommandSectionTextCanUseLocalSyncHeader(t *testing.T) {
 
 	if !strings.Contains(got, "# TO SYNC LOCAL WITH REMOTE  (RUN IT LOCALLY)") {
 		t.Fatalf("expected local-sync header, got:\n%s", got)
-	}
-	if strings.Count(got, featureUpdateCommand()) != 1 {
-		t.Fatalf("expected exactly one shared feature.update, got:\n%s", got)
 	}
 	if !strings.Contains(got, "\n\n# users:\n") {
 		t.Fatalf("expected blank line after header, got:\n%s", got)

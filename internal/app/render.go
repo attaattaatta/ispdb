@@ -229,11 +229,7 @@ func commandSectionTextWithOptions(groups []CommandGroup, colorize bool, withHea
 		builder.WriteString(renderCommandHeader(header, colorize, hasDeleteCommands))
 		builder.WriteString("\n\n")
 	}
-	filteredGroups, hasPackageGroup := splitCommandGroupsForRender(groups)
-	if hasPackageGroup {
-		builder.WriteString(featureUpdateCommand())
-		builder.WriteString("\n\n")
-	}
+	filteredGroups, _ := splitCommandGroupsForRender(groups)
 	for i, group := range filteredGroups {
 		if i > 0 {
 			builder.WriteString("\n\n")

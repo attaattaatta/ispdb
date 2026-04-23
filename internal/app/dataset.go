@@ -10,11 +10,14 @@ import (
 func buildSourceData(raw rawSource, keyPath string) (SourceData, error) {
 	key, err := loadPrivateKey(keyPath)
 	data := SourceData{
-		Format:         raw.format,
-		PrivateKeyUsed: key != nil,
+		Format:           raw.format,
+		PrivateKeyUsed:   key != nil,
+		KeyStatusMessage: "",
+		KeyStatusReason:  "",
 	}
 	if err != nil {
-		data.Warnings = append(data.Warnings, fmt.Sprintf("ispmgr.pem key %s could not be loaded, password values were ignored.", keyPath))
+		data.KeyStatusMessage = fmt.Sprintf("ispmgr.pem key %s could not be loaded, password values were ignored.", keyPath)
+		data.KeyStatusReason = err.Error()
 		key = nil
 	}
 
@@ -277,7 +280,7 @@ func buildSourceData(raw rawSource, keyPath string) (SourceData, error) {
 	})
 
 	if key == nil && err == nil && hasEncryptedPasswords(raw) {
-		data.Warnings = append(data.Warnings, "No ispmgr.pem key was provided, password values were ignored.")
+		data.KeyStatusMessage = "No ispmgr.pem key was provided, password values were ignored."
 	}
 
 	return data, nil
