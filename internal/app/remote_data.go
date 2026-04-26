@@ -38,11 +38,12 @@ type remoteListCommandSections struct {
 }
 
 type remotePreviewState struct {
-	primaryIP       string
-	targetOS        string
-	targetPanel     string
-	currentPackages map[string]struct{}
-	inventory       *remoteInventory
+	primaryIP        string
+	targetOS         string
+	targetPanel      string
+	currentPackages  map[string]struct{}
+	inventory        *remoteInventory
+	inactiveSSLCerts []inactiveSSLCert
 }
 
 func runRemoteListWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg Config) error {
@@ -124,6 +125,11 @@ func runRemoteListWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg
 				CurrentPackages:  remoteInventory.packages,
 				NoDeletePackages: cfg.NoDeletePackages,
 			})
+			if certs, certErr := runner.listInactiveSSLCerts(ctx); certErr == nil {
+				commandSections.remoteWithLocal = addInactiveSSLCertCleanupToWebSiteGroups(commandSections.remoteWithLocal, certs)
+			} else if logger != nil {
+				logger.Debug("failed to load inactive SSL certificates from remote side", "error", certErr)
+			}
 		} else {
 			localDefaultIP, ipErr := runner.primaryIPAddress(ctx)
 			if ipErr != nil {
@@ -149,20 +155,49 @@ func runRemoteListWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg
 }
 
 func buildRemoteExecutionPreviewGroups(data SourceData, scopes []string, cfg Config, state remotePreviewState) ([]CommandGroup, []string) {
-	previewData := data
-	if !cfg.Overwrite && state.inventory != nil {
-		previewData = filterSourceDataByMissingInventory(data, *state.inventory)
-		previewData.Packages = data.Packages
-	}
-
-	return buildCommandsForScopes(previewData, scopes, CommandBuildOptions{
+	options := CommandBuildOptions{
 		DefaultIP:        state.primaryIP,
 		DefaultNS:        defaultNameservers,
 		TargetOS:         state.targetOS,
 		TargetPanel:      state.targetPanel,
 		CurrentPackages:  state.currentPackages,
 		NoDeletePackages: cfg.NoDeletePackages,
-	})
+		Destination:      true,
+	}
+
+	filteredData := data
+	if !cfg.Overwrite && state.inventory != nil {
+		filteredData = filterSourceDataByMissingInventory(data, *state.inventory)
+	}
+
+	allGroups := make([]CommandGroup, 0)
+	allWarnings := make([]string, 0)
+
+	packageScopes := make([]string, 0, 1)
+	entityScopes := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope == "packages" {
+			packageScopes = append(packageScopes, scope)
+			continue
+		}
+		entityScopes = append(entityScopes, scope)
+	}
+
+	if len(packageScopes) > 0 {
+		packageGroups, packageWarnings := buildCommandsForScopes(data, packageScopes, options)
+		allGroups = append(allGroups, packageGroups...)
+		allWarnings = append(allWarnings, packageWarnings...)
+	}
+
+	if len(entityScopes) > 0 {
+		entityGroups, entityWarnings := buildCommandsForScopes(filteredData, entityScopes, options)
+		allGroups = append(allGroups, entityGroups...)
+		allWarnings = append(allWarnings, entityWarnings...)
+	}
+
+	groups := reorderDestCommandGroups(allGroups)
+	groups = addInactiveSSLCertCleanupToWebSiteGroups(groups, state.inactiveSSLCerts)
+	return groups, uniqueStringsPreserveOrder(allWarnings)
 }
 
 func loadLocalCompareSourceData(ctx context.Context, cfg Config, logger *slog.Logger) (SourceData, bool) {

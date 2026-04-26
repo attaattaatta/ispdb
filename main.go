@@ -9,7 +9,7 @@ import (
 	"ispdb/internal/app"
 )
 
-const version = "0.4.3-beta"
+const version = "0.4.4-beta"
 
 //go:embed internal/ascii/*.txt
 var asciiFS embed.FS
@@ -50,6 +50,7 @@ func main() {
 	if err := application.Run(); err != nil {
 		if cfg.LogLevel != "off" {
 			fmt.Fprintln(os.Stderr, err.Error())
+			app.MirrorProgramOutput(err.Error() + "\n")
 		}
 		os.Exit(1)
 	}

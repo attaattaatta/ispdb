@@ -62,6 +62,24 @@ func TestConsoleHandlerColorsErrorLevel(t *testing.T) {
 	}
 }
 
+func TestConsoleHandlerColorsCritLevel(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	handler := newConsoleHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug, ReplaceAttr: replaceLogAttrs})
+
+	record := slog.NewRecord(testTime(), levelCrit, "package step timed out", 0)
+	if err := handler.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() returned error: %v", err)
+	}
+
+	got := out.String()
+	want := "level=" + colorRed + "CRIT" + colorReset
+	if !strings.Contains(got, want) {
+		t.Fatalf("expected colored crit level, got %q", got)
+	}
+}
+
 func TestFileHandlerAddsBlankLineAfterInfo(t *testing.T) {
 	t.Parallel()
 

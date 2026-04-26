@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"math/rand"
 	"os"
@@ -417,5 +418,92 @@ func TestPruneRemoteExecutionPreviewGroupsUsesDestinationFeatureForm(t *testing.
 	}
 	if !strings.Contains(got, "package_nginx=off") || !strings.Contains(got, "packagegroup_apache=turn_off") {
 		t.Fatalf("expected supported diff params to stay in preview, got %q", got)
+	}
+}
+
+func TestHandleRemoteExecutionRunsPreviewGroupsInsteadOfPreparedGroups(t *testing.T) {
+	originalAsk := askYesNoWithColorHook
+	originalPreview := buildRemoteExecutionPreviewHook
+	originalRunWithRunner := runRemoteWorkflowWithRunnerHook
+	t.Cleanup(func() {
+		askYesNoWithColorHook = originalAsk
+		buildRemoteExecutionPreviewHook = originalPreview
+		runRemoteWorkflowWithRunnerHook = originalRunWithRunner
+	})
+
+	askYesNoWithColorHook = func(question string, defaultNo bool, color string) (bool, error) {
+		return true, nil
+	}
+
+	previewGroups := []CommandGroup{
+		{Title: "dns", Commands: []string{"/usr/local/mgr5/sbin/mgrctl -m ispmgr domain.edit name=example.com sok=ok"}},
+	}
+	buildRemoteExecutionPreviewHook = func(a *App, ctx context.Context, data SourceData, commandScopes []string) (remoteExecutionPreview, error) {
+		return remoteExecutionPreview{
+			groups:   previewGroups,
+			commands: flattenCommandGroups(previewGroups),
+			runner:   &remoteRunner{},
+		}, nil
+	}
+
+	var gotGroups []CommandGroup
+	runRemoteWorkflowWithRunnerHook = func(ctx context.Context, runner *remoteRunner, data SourceData, commandGroups []CommandGroup) error {
+		gotGroups = commandGroups
+		return nil
+	}
+
+	app := &App{
+		cfg: Config{DestHost: "192.0.2.10"},
+		ui:  &UI{out: io.Discard, err: io.Discard, rng: rand.New(rand.NewSource(time.Now().UnixNano()))},
+	}
+
+	prepared := preparedSource{
+		data:          SourceData{},
+		commandScopes: []string{"dns"},
+		commandGroups: []CommandGroup{
+			{Title: "users", Commands: []string{"/usr/local/mgr5/sbin/mgrctl -m ispmgr user.edit name=alice sok=ok"}},
+		},
+	}
+
+	if err := app.handleRemoteExecution(context.Background(), prepared); err != nil {
+		t.Fatalf("handleRemoteExecution() returned error: %v", err)
+	}
+	if len(gotGroups) != 1 || gotGroups[0].Title != "dns" {
+		t.Fatalf("expected runtime to use preview groups, got %#v", gotGroups)
+	}
+}
+
+func TestLoadRemotePreviewStateUsesOSReleaseWhenPanelMissing(t *testing.T) {
+	t.Parallel()
+
+	runner := &remoteRunner{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runOverride: func(ctx context.Context, command string, trace bool) (string, error) {
+			switch {
+			case strings.Contains(command, "hostname -I"):
+				return "192.0.2.10\n", nil
+			case strings.Contains(command, "/etc/os-release"):
+				return "ubuntu 24.04\n", nil
+			case strings.Contains(command, "/usr/local/mgr5/sbin/mgrctl"):
+				return "no\n", nil
+			default:
+				return "", nil
+			}
+		},
+	}
+	app := &App{
+		ui:     &UI{out: io.Discard, err: io.Discard, rng: rand.New(rand.NewSource(time.Now().UnixNano()))},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	state, panelInstalled, err := app.loadRemotePreviewState(context.Background(), runner)
+	if err != nil {
+		t.Fatalf("loadRemotePreviewState() returned error: %v", err)
+	}
+	if panelInstalled {
+		t.Fatalf("expected panelInstalled=false")
+	}
+	if state.targetOS != "ubuntu 24.04" {
+		t.Fatalf("expected targetOS from /etc/os-release, got %q", state.targetOS)
 	}
 }

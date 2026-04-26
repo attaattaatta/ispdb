@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const levelCrit = slog.Level(12)
+
 type multiHandler struct {
 	handlers []slog.Handler
 }
@@ -103,12 +105,13 @@ func newFileHandler(out io.Writer, options *slog.HandlerOptions) slog.Handler {
 func (w colorizingLogWriter) Write(p []byte) (int, error) {
 	text := string(p)
 	text = strings.ReplaceAll(text, "level=ERROR", "level="+colorRed+"ERROR"+colorReset)
+	text = strings.ReplaceAll(text, "level=CRIT", "level="+colorRed+"CRIT"+colorReset)
 	return w.base.Write([]byte(text))
 }
 
 func buildLogger(levelName string, logFile string, silent bool) (*slog.Logger, io.Closer, error) {
 	level := parseLogLevel(levelName)
-	options := &slog.HandlerOptions{Level: level}
+	options := &slog.HandlerOptions{Level: level, ReplaceAttr: replaceLogAttrs}
 	handlers := make([]slog.Handler, 0, 2)
 	if !silent {
 		handlers = append(handlers, newConsoleHandler(os.Stderr, options))
@@ -134,6 +137,15 @@ func buildLogger(levelName string, logFile string, silent bool) (*slog.Logger, i
 	return slog.New(multiHandler{handlers: handlers}), file, nil
 }
 
+func replaceLogAttrs(_ []string, attr slog.Attr) slog.Attr {
+	if attr.Key == slog.LevelKey {
+		if level, ok := attr.Value.Any().(slog.Level); ok && level == levelCrit {
+			attr.Value = slog.StringValue("CRIT")
+		}
+	}
+	return attr
+}
+
 func parseLogLevel(level string) slog.Level {
 	switch level {
 	case "debug":
@@ -143,7 +155,7 @@ func parseLogLevel(level string) slog.Level {
 	case "error":
 		return slog.LevelError
 	case "crit":
-		return slog.Level(12)
+		return levelCrit
 	case "off":
 		return slog.Level(100)
 	default:

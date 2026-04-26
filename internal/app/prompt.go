@@ -19,7 +19,9 @@ func askYesNoWithColor(question string, defaultNo bool, color string) (bool, err
 	if !defaultNo {
 		prompt = "[Y/n]"
 	}
-	fmt.Printf("%s%s %s%s ", color, question, prompt, colorReset)
+	promptText := fmt.Sprintf("%s%s %s%s ", color, question, prompt, colorReset)
+	fmt.Print(promptText)
+	mirrorProgramOutput(promptText)
 
 	fd := int(os.Stdin.Fd())
 	if term.IsTerminal(fd) {
@@ -42,6 +44,11 @@ func askYesNoWithColor(question string, defaultNo bool, color string) (bool, err
 			}
 			if byteBuf[0] == '\r' || byteBuf[0] == '\n' {
 				fmt.Print("\r\n")
+				if defaultNo {
+					mirrorProgramOutput("n\n")
+				} else {
+					mirrorProgramOutput("y\n")
+				}
 				return !defaultNo, nil
 			}
 			buffer = append(buffer, byteBuf[0])
@@ -53,9 +60,11 @@ func askYesNoWithColor(question string, defaultNo bool, color string) (bool, err
 			switch interpretYesNoRune(r, defaultNo) {
 			case yesNoAnswerYes:
 				fmt.Print("\r\n")
+				mirrorProgramOutput("y\n")
 				return true, nil
 			case yesNoAnswerNo:
 				fmt.Print("\r\n")
+				mirrorProgramOutput("n\n")
 				return false, nil
 			}
 		}
@@ -66,6 +75,7 @@ func askYesNoWithColor(question string, defaultNo bool, color string) (bool, err
 	if err != nil {
 		return false, err
 	}
+	mirrorProgramOutput(text)
 	if text == "" {
 		return !defaultNo, nil
 	}
@@ -105,11 +115,14 @@ func interpretYesNoRune(r rune, defaultNo bool) yesNoAnswer {
 }
 
 func askSecret(question string) (string, error) {
-	fmt.Printf("%s%s%s ", colorGreen, question, colorReset)
+	promptText := fmt.Sprintf("%s%s%s ", colorGreen, question, colorReset)
+	fmt.Print(promptText)
+	mirrorProgramOutput(promptText)
 	fd := int(os.Stdin.Fd())
 	if term.IsTerminal(fd) {
 		value, err := term.ReadPassword(fd)
 		fmt.Println("")
+		mirrorProgramOutput("<hidden>\n")
 		return string(value), err
 	}
 	reader := bufio.NewReader(os.Stdin)
@@ -121,8 +134,11 @@ func askSecret(question string) (string, error) {
 }
 
 func askLines(question string) ([]string, error) {
-	fmt.Printf("%s%s%s\n", colorGreen, question, colorReset)
+	promptText := fmt.Sprintf("%s%s%s\n", colorGreen, question, colorReset)
+	fmt.Print(promptText)
+	mirrorProgramOutput(promptText)
 	fmt.Println("Submit an empty line to finish input.")
+	mirrorProgramOutput("Submit an empty line to finish input.\n")
 
 	reader := bufio.NewReader(os.Stdin)
 	lines := make([]string, 0)
@@ -135,6 +151,7 @@ func askLines(question string) ([]string, error) {
 		if line == "" {
 			break
 		}
+		mirrorProgramOutput(line + "\n")
 		lines = append(lines, line)
 		if err != nil {
 			break

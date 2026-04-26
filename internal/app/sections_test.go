@@ -52,6 +52,35 @@ func TestSectionsUseLowercaseFTPUsersTitle(t *testing.T) {
 	}
 }
 
+func TestSectionsAllPlacesDNSBeforeWebDomains(t *testing.T) {
+	t.Parallel()
+
+	data := SourceData{
+		DNSDomains: []DNSDomain{{ID: "1", Name: "example.com"}},
+		WebDomains: []WebDomain{
+			{ID: "1", Name: "example.com"},
+		},
+	}
+
+	sections := data.sections("all")
+	dnsIndex := -1
+	webIndex := -1
+	for index, section := range sections {
+		switch section.Title {
+		case "dns":
+			dnsIndex = index
+		case "web domains":
+			webIndex = index
+		}
+	}
+	if dnsIndex == -1 || webIndex == -1 {
+		t.Fatalf("expected dns and web domains sections, got %#v", sections)
+	}
+	if dnsIndex > webIndex {
+		t.Fatalf("expected dns before web domains, got dns=%d web=%d", dnsIndex, webIndex)
+	}
+}
+
 func TestSectionsForScopesPreserveRequestedOrder(t *testing.T) {
 	t.Parallel()
 

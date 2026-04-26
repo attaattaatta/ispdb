@@ -205,9 +205,12 @@ func TestBuildPackageSyncStepsCombinesAltPHPVersionsIntoSingleStep(t *testing.T)
 	if !strings.Contains(altPHPStep.Command, "'elname=PHP 7.2 Apache module, PHP 7.2 PHP-FPM, PHP 7.2 common'") {
 		t.Fatalf("expected combined altphp command to contain quoted sample elname, got %q", altPHPStep.Command)
 	}
+	if !containsString(altPHPStep.ExpectedPackages, "ispphp72_lsapi") || !containsString(altPHPStep.ExpectedPackages, "ispphp83_lsapi") {
+		t.Fatalf("expected altphp component packages to be preserved, got %#v", altPHPStep.ExpectedPackages)
+	}
 }
 
-func TestBuildPackageSyncStepsUsesOnlyDifferingAltPHPVersions(t *testing.T) {
+func TestBuildPackageSyncStepsUsesFullAltPHPGroupWhenStateDiffers(t *testing.T) {
 	t.Parallel()
 
 	steps, warnings := buildPackageSyncSteps(
@@ -242,11 +245,8 @@ func TestBuildPackageSyncStepsUsesOnlyDifferingAltPHPVersions(t *testing.T) {
 	if altPHPStep == nil {
 		t.Fatalf("expected altphp step, got %#v", steps)
 	}
-	if strings.Contains(altPHPStep.Command, "altphp72") {
-		t.Fatalf("did not expect already matching altphp72 in diff command, got %q", altPHPStep.Command)
-	}
-	if !strings.Contains(altPHPStep.Command, "'elid=altphp83'") {
-		t.Fatalf("expected only missing altphp83 in diff command, got %q", altPHPStep.Command)
+	if !strings.Contains(altPHPStep.Command, "'elid=altphp72, altphp83'") {
+		t.Fatalf("expected full altphp group command when state differs, got %q", altPHPStep.Command)
 	}
 	if strings.Contains(altPHPStep.Command, "altphp84") {
 		t.Fatalf("did not expect extra current altphp84 to appear in resume command, got %q", altPHPStep.Command)
@@ -307,7 +307,7 @@ func TestBuildPackageSyncStepsDoesNotSkipWebGroupWhenDestinationHasExtraPackages
 	t.Fatalf("expected web step to remain when destination has extra web packages, got %#v", steps)
 }
 
-func TestBuildPackageSyncStepsUsesOnlyDifferingArgsForWebGroup(t *testing.T) {
+func TestBuildPackageSyncStepsUsesFullWebGroupWhenStateDiffers(t *testing.T) {
 	t.Parallel()
 
 	steps, warnings := buildPackageSyncSteps(
@@ -345,21 +345,21 @@ func TestBuildPackageSyncStepsUsesOnlyDifferingArgsForWebGroup(t *testing.T) {
 	command := webStep.Command
 	for _, want := range []string{
 		"packagegroup_apache=turn_off",
+		"package_nginx=on",
+		"package_php=on",
 		"package_logrotate=off",
 	} {
 		if !strings.Contains(command, want) {
-			t.Fatalf("expected web diff command to contain %q, got %q", want, command)
+			t.Fatalf("expected full web group command to contain %q, got %q", want, command)
 		}
 	}
-	for _, dontWant := range []string{
-		"package_nginx=on",
-		"package_php=on",
-		"package_php-fpm=",
-		"package_awstats=",
-		"package_phpcomposer=",
+	for _, want := range []string{
+		"package_php-fpm=off",
+		"package_awstats=off",
+		"package_phpcomposer=off",
 	} {
-		if strings.Contains(command, dontWant) {
-			t.Fatalf("did not expect unchanged web arg %q in diff command %q", dontWant, command)
+		if !strings.Contains(command, want) {
+			t.Fatalf("expected full web group command to retain %q, got %q", want, command)
 		}
 	}
 }

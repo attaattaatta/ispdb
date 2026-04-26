@@ -9,7 +9,7 @@ func TestDestExecutionScopesFromValueDefaultsToCanonicalOrder(t *testing.T) {
 	t.Parallel()
 
 	got := destExecutionScopesFromValue("all")
-	want := []string{"packages", "users", "webdomains", "databases", "email", "dns"}
+	want := []string{"packages", "users", "dns", "webdomains", "databases", "email"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("destExecutionScopesFromValue(all) = %#v, want %#v", got, want)
 	}
@@ -19,7 +19,7 @@ func TestDestExecutionScopesFromValueNormalizesSubsetOrder(t *testing.T) {
 	t.Parallel()
 
 	got := destExecutionScopesFromValue("email,packages,dns,users")
-	want := []string{"packages", "users", "email", "dns"}
+	want := []string{"packages", "users", "dns", "email"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("destExecutionScopesFromValue(email,packages,dns,users) = %#v, want %#v", got, want)
 	}

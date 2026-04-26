@@ -5,7 +5,9 @@ import (
 	"strings"
 )
 
-var dataScopeOrder = []string{"packages", "users", "webdomains", "databases", "email", "dns"}
+var dataScopeOrder = []string{"packages", "users", "dns", "webdomains", "databases", "email"}
+
+var listAllScopeOrder = []string{"packages", "users", "dns", "webdomains", "databases", "email"}
 
 func parseScopeList(value string, supported []string, flag string) ([]string, error) {
 	parts := strings.Split(strings.ToLower(strings.TrimSpace(value)), ",")
@@ -57,7 +59,7 @@ func hasScope(scopes []string, want string) bool {
 func dataScopesFromListMode(value string) []string {
 	scopes := configuredScopeList(value, listModes)
 	if len(scopes) == 0 || hasScope(scopes, "all") {
-		return append([]string{}, dataScopeOrder...)
+		return append([]string{}, listAllScopeOrder...)
 	}
 	result := make([]string, 0, len(scopes))
 	for _, scope := range scopes {

@@ -43,6 +43,7 @@ func handleInterruptRequest() {
 	if interruptCount.Add(1) == 1 {
 		fmt.Fprintln(interruptOut)
 		fmt.Fprintln(interruptOut, "Press Ctrl+C again to terminate program.")
+		mirrorProgramOutput("\nPress Ctrl+C again to terminate program.\n")
 		return
 	}
 	interruptExitHook(130)

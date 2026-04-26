@@ -92,11 +92,39 @@ func TestBuildCommandsUsesWebSitesTitleAndNoInvalidUserCGIVersion(t *testing.T) 
 	if strings.Contains(joined, "site_analyzer=") {
 		t.Fatalf("site commands must not contain site_analyzer anymore:\n%s", joined)
 	}
-	if !strings.Contains(joined, "sslcert.selfsigned") {
-		t.Fatalf("expected self-signed certificate command to be generated before web sites:\n%s", joined)
+	if strings.Contains(joined, "sslcert.selfsigned") || strings.Contains(joined, "ssl certificates") {
+		t.Fatalf("did not expect SSL certificate command group to be generated:\n%s", joined)
 	}
-	if !strings.Contains(joined, "site_ssl_cert=example.com") {
-		t.Fatalf("expected site command to reference generated self-signed certificate name:\n%s", joined)
+	if strings.Contains(joined, "site_ssl_cert=") {
+		t.Fatalf("site commands must not contain site_ssl_cert anymore:\n%s", joined)
+	}
+}
+
+func TestBuildCommandsNormalizesWebSiteAliasesForMgrctl(t *testing.T) {
+	t.Parallel()
+
+	data := SourceData{
+		WebDomains: []WebDomain{
+			{
+				ID:      "1",
+				Name:    "poiskzip.ru",
+				Owner:   "alice",
+				Aliases: "*.poiskzip.ru, www.poiskzip.ru",
+			},
+		},
+	}
+
+	groups, warnings := buildCommandsForScopes(data, []string{"webdomains"}, CommandBuildOptions{})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	joined := strings.Join(flattenCommandGroups(groups), "\n")
+	if !strings.Contains(joined, "'site_aliases=*.poiskzip.ru www.poiskzip.ru'") {
+		t.Fatalf("expected aliases to be space-separated in site.edit command:\n%s", joined)
+	}
+	if strings.Contains(joined, "site_aliases=*.poiskzip.ru,") {
+		t.Fatalf("did not expect comma-separated aliases in site.edit command:\n%s", joined)
 	}
 }
 
@@ -330,6 +358,38 @@ func TestBuildCommandsForDatabasesFallsBackToRandomPasswordWhenDBUserNameDiffers
 	}
 	if strings.Contains(joined, "password=secret-pass") || strings.Contains(joined, "confirm=secret-pass") {
 		t.Fatalf("did not expect unrelated db user password to be reused, got\n%s", joined)
+	}
+}
+
+func TestBuildCommandsForPostgreSQLDatabasesUsesUTF8Charset(t *testing.T) {
+	t.Parallel()
+
+	data := SourceData{
+		DBServers: []DBServer{
+			{ID: "1", Name: "PostgreSQL", Type: "postgresql", Host: "localhost", Username: "postgres", Password: "server-pass"},
+		},
+		Databases: []Database{
+			{ID: "1", Name: "pgdb", Owner: "alice", Server: "PostgreSQL"},
+		},
+		DBUsers: []DBUser{
+			{ID: "1", Name: "pgdb", Server: "PostgreSQL", Password: "db-pass"},
+		},
+	}
+
+	groups, warnings := buildCommandsForScopes(data, []string{"databases"}, CommandBuildOptions{})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	joined := strings.Join(flattenCommandGroups(groups), "\n")
+	if !strings.Contains(joined, "db.edit name=pgdb") {
+		t.Fatalf("expected generated PostgreSQL database command, got\n%s", joined)
+	}
+	if !strings.Contains(joined, "charset=UTF8") {
+		t.Fatalf("expected PostgreSQL database command to use charset=UTF8, got\n%s", joined)
+	}
+	if strings.Contains(joined, "charset=utf8mb4") {
+		t.Fatalf("did not expect MySQL charset for PostgreSQL database command, got\n%s", joined)
 	}
 }
 

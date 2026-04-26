@@ -79,6 +79,35 @@ func TestRenderSummaryLinePrefixesGreenHash(t *testing.T) {
 	}
 }
 
+func TestRenderSummaryLineColorsWholeLineWithoutColon(t *testing.T) {
+	t.Parallel()
+
+	got := renderSummaryLine("/usr/local/mgr5/sbin/mgrctl -m ispmgr site.edit sok=ok", colorRed)
+	want := formatTitle("# ", true) + colorRed + "/usr/local/mgr5/sbin/mgrctl -m ispmgr site.edit sok=ok" + colorReset
+	if got != want {
+		t.Fatalf("renderSummaryLine() = %q, want %q", got, want)
+	}
+}
+
+func TestSummaryOutputLinesUsesNoneForEmptyOutput(t *testing.T) {
+	t.Parallel()
+
+	got := summaryOutputLines(" \n\t ")
+	if len(got) != 1 || got[0] != "none" {
+		t.Fatalf("summaryOutputLines(empty) = %#v, want [none]", got)
+	}
+}
+
+func TestSummaryOutputLinesDropsBlankLines(t *testing.T) {
+	t.Parallel()
+
+	got := summaryOutputLines("OK\n\nERROR value(name): invalid\r\n")
+	want := []string{"OK", "ERROR value(name): invalid"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("summaryOutputLines() = %#v, want %#v", got, want)
+	}
+}
+
 func TestSummaryStateFromOutcomeReturnsErrorWhenWorkflowFailed(t *testing.T) {
 	t.Parallel()
 

@@ -21,8 +21,10 @@ type remoteInventory struct {
 }
 
 type remoteFailure struct {
-	Action string
-	Reason string
+	Action      string
+	Reason      string
+	PushCommand string
+	PushOutput  string
 }
 
 type summaryState int
@@ -132,6 +134,9 @@ func (inv *remoteInventory) applyCommand(command string) {
 }
 
 func (r *remoteRunner) loadRemoteInventory(ctx context.Context) (*remoteInventory, error) {
+	if r.loadInventoryOverride != nil {
+		return r.loadInventoryOverride(ctx)
+	}
 	loaded, err := r.loadRemoteSourceData(ctx)
 	if err != nil {
 		return nil, err
@@ -199,6 +204,14 @@ func (r *remoteRunner) printRemoteSummary(ctx context.Context, source SourceData
 	for _, failure := range r.failures {
 		if consoleLevelEnabled(r.cfg.LogLevel, "error") {
 			r.ui.Println(renderSummaryLine(fmt.Sprintf("%s: %s", failure.Action, failure.Reason), colorRed))
+			if strings.TrimSpace(failure.PushCommand) != "" {
+				r.ui.Println(renderSummaryRawLine("ssh push command was:", colorRed))
+				r.ui.Println(renderSummaryRawLine(failure.PushCommand, colorRed))
+				r.ui.Println(renderSummaryRawLine("ssh push comand return was:", colorRed))
+				for _, line := range summaryOutputLines(failure.PushOutput) {
+					r.ui.Println(renderSummaryRawLine(line, colorRed))
+				}
+			}
 		}
 	}
 	if consoleLevelEnabled(r.cfg.LogLevel, "info") || (state == summaryStateError && consoleLevelEnabled(r.cfg.LogLevel, "error")) {
@@ -246,7 +259,38 @@ func renderSummaryLine(text string, suffixColor string) string {
 	if suffixColor == "" {
 		return prefix + text
 	}
+	if !strings.Contains(text, ":") {
+		return prefix + suffixColor + text + colorReset
+	}
 	return prefix + colorizeColonSuffix(text, suffixColor)
+}
+
+func renderSummaryRawLine(text string, lineColor string) string {
+	prefix := formatTitle("# ", true)
+	if lineColor == "" {
+		return prefix + text
+	}
+	return prefix + lineColor + text + colorReset
+}
+
+func summaryOutputLines(output string) []string {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return []string{"none"}
+	}
+	lines := strings.Split(output, "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		result = append(result, line)
+	}
+	if len(result) == 0 {
+		return []string{"none"}
+	}
+	return result
 }
 
 func summaryContextSuffix(sourceLabel string, destLabel string) string {

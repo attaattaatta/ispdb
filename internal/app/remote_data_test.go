@@ -177,7 +177,7 @@ func TestBuildCommandsForFilteredRemotePackagesOmitsMatchingLocalPackages(t *tes
 	}
 }
 
-func TestBuildRemoteExecutionPreviewGroupsUsesRemoteState(t *testing.T) {
+func TestBuildRemoteExecutionPreviewGroupsSkipsSatisfiedPackagesButFiltersExistingEntities(t *testing.T) {
 	t.Parallel()
 
 	source := SourceData{
@@ -208,7 +208,7 @@ func TestBuildRemoteExecutionPreviewGroupsUsesRemoteState(t *testing.T) {
 
 	joined := strings.Join(flattenCommandGroups(groups), "\n")
 	if strings.Contains(joined, "package_fail2ban=on") {
-		t.Fatalf("did not expect matching remote package in preview commands:\n%s", joined)
+		t.Fatalf("did not expect already satisfied package group in preview commands:\n%s", joined)
 	}
 	if !strings.Contains(joined, "package_nginx=on") {
 		t.Fatalf("expected missing remote package in preview commands:\n%s", joined)
@@ -218,5 +218,124 @@ func TestBuildRemoteExecutionPreviewGroupsUsesRemoteState(t *testing.T) {
 	}
 	if !strings.Contains(joined, "name=bob") {
 		t.Fatalf("expected missing remote user in preview commands:\n%s", joined)
+	}
+}
+
+func TestBuildRemoteExecutionPreviewGroupsUsesRemoteOSForApachePackageName(t *testing.T) {
+	t.Parallel()
+
+	source := SourceData{
+		Packages: []Package{
+			{ID: "1", Name: "apache-itk"},
+			{ID: "2", Name: "nginx"},
+		},
+	}
+
+	groups, warnings := buildRemoteExecutionPreviewGroups(source, []string{"packages"}, Config{}, remotePreviewState{
+		targetOS: "ubuntu 24.04",
+	})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	joined := strings.Join(flattenCommandGroups(groups), "\n")
+	if !strings.Contains(joined, "packagegroup_apache=apache-itk-ubuntu") {
+		t.Fatalf("expected Ubuntu-specific Apache package in preview commands:\n%s", joined)
+	}
+	if strings.Contains(joined, "packagegroup_apache=apache-itk ") {
+		t.Fatalf("did not expect non-Ubuntu Apache package in preview commands:\n%s", joined)
+	}
+}
+
+func TestBuildRemoteExecutionPreviewGroupsUsesDestinationSiteForm(t *testing.T) {
+	t.Parallel()
+
+	source := SourceData{
+		WebDomains: []WebDomain{{
+			Name:    "rem.biz",
+			Owner:   "www-root",
+			IPAddr:  "79.174.15.25",
+			SSLCert: "rem.biz_move-2026-04-05",
+		}},
+	}
+
+	groups, warnings := buildRemoteExecutionPreviewGroups(source, []string{"webdomains"}, Config{}, remotePreviewState{
+		primaryIP: "188.120.249.93",
+	})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	joined := strings.Join(flattenCommandGroups(groups), "\n")
+	if strings.Contains(joined, "sslcert.selfsigned") || strings.Contains(joined, "# ssl certificates") {
+		t.Fatalf("did not expect destination preview to generate SSL certificate commands:\n%s", joined)
+	}
+	if !strings.Contains(joined, "site_ipaddrs=188.120.249.93") {
+		t.Fatalf("expected destination IP in site command:\n%s", joined)
+	}
+	if strings.Contains(joined, "site_ipaddrs=79.174.15.25") {
+		t.Fatalf("did not expect source IP in destination preview:\n%s", joined)
+	}
+	if strings.Contains(joined, "site_ssl_cert=") {
+		t.Fatalf("did not expect site_ssl_cert in destination preview:\n%s", joined)
+	}
+	if strings.Contains(joined, "rem.biz_move-2026-04-05") {
+		t.Fatalf("did not expect source certificate name in destination preview:\n%s", joined)
+	}
+}
+
+func TestBuildRemoteExecutionPreviewGroupsPrependsInactiveSSLCleanupToWebSites(t *testing.T) {
+	t.Parallel()
+
+	source := SourceData{
+		WebDomains: []WebDomain{{
+			Name:  "rem.biz",
+			Owner: "www-root",
+		}},
+	}
+
+	groups, warnings := buildRemoteExecutionPreviewGroups(source, []string{"webdomains"}, Config{}, remotePreviewState{
+		primaryIP: "188.120.249.93",
+		inactiveSSLCerts: []inactiveSSLCert{
+			{Key: "www-root%#%api.rem.biz", Name: "api.rem.biz"},
+		},
+	})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	if len(groups) != 1 || groups[0].Title != "web sites" {
+		t.Fatalf("expected web sites group, got %#v", groups)
+	}
+	if len(groups[0].Commands) < 2 {
+		t.Fatalf("expected cleanup command and site command, got %#v", groups[0].Commands)
+	}
+	if !strings.Contains(groups[0].Commands[0], "sslcert.delete") {
+		t.Fatalf("expected inactive SSL cleanup to be first command, got %#v", groups[0].Commands)
+	}
+	if !strings.Contains(groups[0].Commands[0], "'elid=www-root%#%api.rem.biz' elname=api.rem.biz") {
+		t.Fatalf("expected elid and elname to be separated by space, got %s", groups[0].Commands[0])
+	}
+	if !strings.Contains(groups[0].Commands[1], "site.edit") {
+		t.Fatalf("expected site.edit after cleanup command, got %#v", groups[0].Commands)
+	}
+}
+
+func TestNormalizePackageCommandGroupsForTargetOSRewritesApachePackage(t *testing.T) {
+	t.Parallel()
+
+	groups := []CommandGroup{{
+		Title: "packages (web)",
+		Commands: []string{
+			"/usr/local/mgr5/sbin/mgrctl -m ispmgr feature.edit sok=ok elid=web package_nginx=on packagegroup_apache=apache-itk",
+		},
+	}}
+
+	normalized := normalizePackageCommandGroupsForTargetOS(groups, "Ubuntu 24.04")
+	joined := strings.Join(flattenCommandGroups(normalized), "\n")
+	if !strings.Contains(joined, "packagegroup_apache=apache-itk-ubuntu") {
+		t.Fatalf("expected runtime command to be normalized for Ubuntu destination:\n%s", joined)
+	}
+	if strings.Contains(joined, "packagegroup_apache=apache-itk ") {
+		t.Fatalf("did not expect runtime command to keep non-Ubuntu Apache package:\n%s", joined)
 	}
 }

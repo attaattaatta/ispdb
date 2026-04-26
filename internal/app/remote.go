@@ -49,6 +49,21 @@ const (
 	swapfilePath      = "/swapfile"
 	swapfileSizeBytes = int64(2 * 1024 * 1024 * 1024)
 	swapfileFstabLine = "/swapfile                                 none                    swap    sw,pri=10              0 0"
+
+	defaultRemoteMgrctlTimeout   = 10 * time.Minute
+	forceRemoteCommandTimeout    = 1 * time.Hour
+	defaultFeatureStepTimeout    = 20 * time.Minute
+	dpkgLockFeatureStepTimeout   = 30 * time.Minute
+	forceFeatureStepWaitTimeout  = 3 * time.Hour
+	entityVisibilityTimeout      = time.Minute
+	entityVisibilityPollInterval = 2 * time.Second
+
+	packageProgressDiscoveryTimeout   = 30 * time.Second
+	packageProgressCompletionTimeout  = 20 * time.Minute
+	entityProgressDiscoveryTimeout    = 3 * time.Second
+	entityProgressCompletionTimeout   = 30 * time.Second
+	dbServerProgressDiscoveryTimeout  = 5 * time.Second
+	dbServerProgressCompletionTimeout = 3 * time.Minute
 )
 
 type remoteRunner struct {
@@ -61,28 +76,36 @@ type remoteRunner struct {
 	panelName  string
 	cfg        Config
 
-	liteDockerPrepared bool
-	inventory          *remoteInventory
-	failures           []remoteFailure
-	summarySuccesses   []string
-	summaryWarnings    []string
-	printedCommand     bool
-	runOverride        func(context.Context, string, bool) (string, error)
+	liteDockerPrepared    bool
+	inventory             *remoteInventory
+	failures              []remoteFailure
+	summarySuccesses      []string
+	summaryWarnings       []string
+	printedCommand        bool
+	lastPushCommand       string
+	lastPushOutput        string
+	runOverride           func(context.Context, string, bool) (string, error)
+	loadInventoryOverride func(context.Context) (*remoteInventory, error)
 }
 
-func runRemoteWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg Config, data SourceData, commands []string) (err error) {
+type progressCheckOptions struct {
+	DiscoveryTimeout    time.Duration
+	CompletionTimeout   time.Duration
+	AllowIdleCompletion bool
+}
+
+func runRemoteWorkflow(ctx context.Context, ui *UI, logger *slog.Logger, cfg Config, data SourceData, commandGroups []CommandGroup) (err error) {
 	runner, err := connectRemoteRunner(ui, logger, cfg, true)
 	if err != nil {
 		return err
 	}
-	return runRemoteWorkflowWithRunner(ctx, runner, data, commands)
+	return runRemoteWorkflowWithRunner(ctx, runner, data, commandGroups)
 }
 
-func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data SourceData, commands []string) (err error) {
+func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data SourceData, commandGroups []CommandGroup) (err error) {
 	defer runner.Close()
 	cfg := runner.cfg
 	ui := runner.ui
-	execScopes := destExecutionScopesFromValue(cfg.DestScope)
 	if err := runner.ensureDestinationRoot(ctx); err != nil {
 		return err
 	}
@@ -110,12 +133,9 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 	}
 	if !panelInstalled {
 		runner.warnLine("destination server does not have ispmanager installed.")
-		install := cfg.Force || cfg.AutoYes
-		if !cfg.Force && !cfg.AutoYes {
-			install, err = askYesNoWithColor("ispmanager was not found on destination server. Install it?", true, colorYellow)
-			if err != nil {
-				return err
-			}
+		install, err := confirmPanelInstall(cfg)
+		if err != nil {
+			return err
 		}
 		if !install {
 			return fmt.Errorf("%sdestination server does not have ispmanager installed%s", colorRed, colorReset)
@@ -132,11 +152,12 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 		if licenseErr != nil {
 			return licenseErr
 		}
-		return validateLicense(licInfo, len(data.WebDomains))
+		return validateLicense(licInfo, len(data.WebDomains), destScopeIncludesWebDomains(cfg.DestScope))
 	}); err != nil {
 		return err
 	}
 	runner.panelName = licInfo["panel_name"]
+	commandGroups = normalizePackageCommandGroupsForTargetOS(commandGroups, licInfo["os"])
 
 	if err := runner.runAction("waiting for package operations to finish on remote side", func() error {
 		return runner.waitForFeaturesIdle(ctx)
@@ -146,14 +167,12 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 	if consoleLevelEnabled(cfg.LogLevel, "info") {
 		ui.Println("")
 	}
-	if hasScope(execScopes, "packages") {
-		packageSteps, packageWarnings := buildPackageSyncSteps(data.Packages, map[string]struct{}{}, packagePlanOptions{
-			TargetOS:         licInfo["os"],
-			TargetPanel:      licInfo["panel_name"],
-			NoDeletePackages: cfg.NoDeletePackages,
-			SkipSatisfied:    false,
-		})
-		packageSteps = uniquePackageSteps(packageSteps)
+	executionCommands := flattenCommandGroups(commandGroups)
+	packageSteps, packageWarnings, err := runner.destinationPackageSteps(ctx, data, licInfo)
+	if err != nil {
+		return err
+	}
+	if len(packageSteps) > 0 {
 		for _, warning := range packageWarnings {
 			runner.warnPackageWarning(warning)
 		}
@@ -176,7 +195,9 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 	}
 	runner.inventory = inventory
 
-	entityCommands := uniqueStringsPreserveOrder(filterEntityCommands(commands))
+	entityCommands := uniqueStringsPreserveOrder(filterEntityCommands(executionCommands))
+	entityCommands = filterExistingEntityCommands(entityCommands, runner.inventory, cfg.Overwrite)
+	unusedSSLCertsCleaned := false
 	for _, command := range entityCommands {
 		sourceCommand := command
 		rewrittenCommand := command
@@ -229,12 +250,26 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 		}
 		runner.logCommandRewrite(sourceCommand, rewrittenCommand)
 
+		if !unusedSSLCertsCleaned && isSiteEditCommand(rewrittenCommand) {
+			unusedSSLCertsCleaned = true
+			if err := runner.cleanupUnusedSSLCerts(ctx); err != nil {
+				action := "deleting unused ssl certificates"
+				runner.failAction(action)
+				runner.recordFailure(action, err)
+				if !cfg.Force {
+					return err
+				}
+				runner.warnLine("Unused SSL certificate cleanup error ignored because --force was used.")
+			}
+		}
+
 		progressID := randomProgressID()
 		commandWithProgress := addProgressID(rewrittenCommand, progressID)
 		logCursor := runner.newRemoteLogCursor(ctx)
 		action := describeRemoteCommand(rewrittenCommand)
 		runner.printLaunchedCommand(commandWithProgress)
 		output, runErr := runner.run(ctx, commandWithProgress)
+		runner.recordPushOutput(output)
 		if strings.TrimSpace(output) != "" && consoleLevelEnabled(cfg.LogLevel, "info") {
 			ui.Println(strings.TrimSpace(output))
 		}
@@ -244,6 +279,7 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 		} else if handled {
 			output = retriedOutput
 			runErr = retriedErr
+			runner.recordPushOutput(output)
 			if strings.TrimSpace(output) != "" && consoleLevelEnabled(cfg.LogLevel, "info") {
 				ui.Println(strings.TrimSpace(output))
 			}
@@ -274,7 +310,7 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 			runner.warnLine("feature is not available on remote side, skipped.")
 			continue
 		}
-		progressErr := runner.checkLogProgress(ctx, progressID, logCursor.ispmgrOffset)
+		progressErr := runner.checkLogProgress(ctx, progressID, logCursor.ispmgrOffset, entityProgressCheckOptions(rewrittenCommand))
 		logErr := error(nil)
 		if progressErr != nil {
 			if runErr != nil {
@@ -303,11 +339,17 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 			runner.warnLine("Panel log error ignored because --force was used.")
 		}
 		if runErr == nil && logErr == nil {
-			if runner.inventory != nil {
-				runner.inventory.applyCommand(rewrittenCommand)
+			if visibilityErr := runner.waitEntityCommandVisible(ctx, rewrittenCommand); visibilityErr != nil {
+				runner.failAction(action)
+				runner.recordFailure(action, visibilityErr)
+				if !cfg.Force {
+					return visibilityErr
+				}
+				runner.warnLine("Entity visibility error ignored because --force was used.")
+			} else {
+				runner.okAction(action)
+				runner.recordSummarySuccess(action + ": OK")
 			}
-			runner.okAction(action)
-			runner.recordSummarySuccess(action + ": OK")
 		}
 	}
 
@@ -323,6 +365,31 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 	}
 
 	return nil
+}
+
+func confirmPanelInstall(cfg Config) (bool, error) {
+	if cfg.AutoYes {
+		return true, nil
+	}
+	return askYesNoWithColorHook("ispmanager was not found on destination server. Install it?", true, colorYellow)
+}
+
+func (r *remoteRunner) destinationPackageSteps(ctx context.Context, data SourceData, licInfo map[string]string) ([]packageSyncStep, []string, error) {
+	if !hasScope(destExecutionScopesFromValue(r.cfg.DestScope), "packages") {
+		return nil, nil, nil
+	}
+	records, err := r.featureRecords(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	currentPackages := installedPackagesFromFeatures(records, licInfo["os"])
+	steps, warnings := buildPackageSyncSteps(data.Packages, currentPackages, packagePlanOptions{
+		TargetOS:         licInfo["os"],
+		TargetPanel:      licInfo["panel_name"],
+		NoDeletePackages: r.cfg.NoDeletePackages,
+		SkipSatisfied:    len(currentPackages) > 0,
+	})
+	return steps, warnings, nil
 }
 
 func connectRemoteRunner(ui *UI, logger *slog.Logger, cfg Config, announce bool) (*remoteRunner, error) {
@@ -415,8 +482,10 @@ func (r *remoteRunner) recordFailure(action string, err error) {
 		return
 	}
 	r.failures = append(r.failures, remoteFailure{
-		Action: action,
-		Reason: strings.TrimSpace(err.Error()),
+		Action:      action,
+		Reason:      strings.TrimSpace(err.Error()),
+		PushCommand: r.lastPushCommand,
+		PushOutput:  r.lastPushOutput,
 	})
 }
 
@@ -467,6 +536,13 @@ func (r *remoteRunner) warnLine(text string) {
 	appendRemoteLogLine(r.cfg, "WARN", text)
 }
 
+func (r *remoteRunner) warnFullLine(text string) {
+	if consoleLevelEnabled(r.cfg.LogLevel, "warn") {
+		r.ui.Println(colorYellow + text + colorReset)
+	}
+	appendRemoteLogLine(r.cfg, "WARN", text)
+}
+
 func (r *remoteRunner) warnPackageWarning(text string) {
 	r.warnLine(text)
 	if strings.Contains(strings.ToLower(text), "skipped") {
@@ -507,6 +583,8 @@ func (r *remoteRunner) warnOverwriteBlock(lines ...string) {
 }
 
 func (r *remoteRunner) printLaunchedCommand(command string) {
+	r.lastPushCommand = strings.TrimSpace(command)
+	r.lastPushOutput = ""
 	if consoleLevelEnabled(r.cfg.LogLevel, "info") {
 		if r.printedCommand {
 			r.ui.Println("")
@@ -519,6 +597,10 @@ func (r *remoteRunner) printLaunchedCommand(command string) {
 		r.ui.Println("monitoring files: /usr/local/mgr5/var/ispmgr.log, /usr/local/mgr5/var/pkg.log")
 	}
 	appendRemoteLogLine(r.cfg, "DEBUG", "monitoring files: /usr/local/mgr5/var/ispmgr.log, /usr/local/mgr5/var/pkg.log")
+}
+
+func (r *remoteRunner) recordPushOutput(output string) {
+	r.lastPushOutput = strings.TrimSpace(output)
 }
 
 func (r *remoteRunner) printMonitoringCommand(command string) {
@@ -572,6 +654,9 @@ func (r *remoteRunner) logCommandRewrite(sourceCommand string, remoteCommand str
 
 func appendRemoteLogLine(cfg Config, level string, text string) {
 	if strings.TrimSpace(cfg.LogFile) == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	if strings.TrimSpace(cfg.LogFile) == programOutputLogFile() {
 		return
 	}
 	file, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -655,6 +740,14 @@ func (r *remoteRunner) panelInstalled(ctx context.Context) (bool, error) {
 	return strings.TrimSpace(output) == "yes", nil
 }
 
+func (r *remoteRunner) remoteOSRelease(ctx context.Context) (string, error) {
+	output, err := r.runQuiet(ctx, "sh -lc '. /etc/os-release 2>/dev/null && printf \"%s %s\\n\" \"${ID:-$NAME}\" \"${VERSION_ID:-}\"'")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(output), nil
+}
+
 func (r *remoteRunner) installPanel(ctx context.Context) error {
 	if err := r.runAction("installing wget on remote side", func() error {
 		return r.ensureWget(ctx)
@@ -665,7 +758,7 @@ func (r *remoteRunner) installPanel(ctx context.Context) error {
 	if err := r.runAction("starting control panel installation", func() error {
 		r.printLaunchedCommand("bash -lc " + shellQuote(command))
 		suppressedCount := 0
-		_, err := r.runStreamingWithTrace(ctx, "bash -lc "+shellQuote(command), true, func(line string) {
+		output, err := r.runStreamingWithTrace(ctx, "bash -lc "+shellQuote(command), true, func(line string) {
 			trimmed := strings.TrimSpace(line)
 			if trimmed == "" {
 				return
@@ -678,6 +771,7 @@ func (r *remoteRunner) installPanel(ctx context.Context) error {
 				r.ui.Println(trimmed)
 			}
 		})
+		r.recordPushOutput(output)
 		if suppressedCount > 0 {
 			r.warnLine(fmt.Sprintf("installer emitted %d non-fatal /proc/sys grep warnings, suppressed from console output.", suppressedCount))
 		}
@@ -701,6 +795,7 @@ func (r *remoteRunner) ensureWget(ctx context.Context) error {
 	install := buildWgetInstallCommand()
 	r.printLaunchedCommand(install)
 	installOutput, err := r.run(ctx, install)
+	r.recordPushOutput(installOutput)
 	if err != nil {
 		return fmt.Errorf("%sfailed to install wget on destination server: %w; output: %s%s", colorRed, err, strings.TrimSpace(installOutput), colorReset)
 	}
@@ -719,9 +814,12 @@ func publicKeyAuth(path string) (ssh.AuthMethod, error) {
 	return ssh.PublicKeys(signer), nil
 }
 
-func remoteCommandTimeout(command string) time.Duration {
+func remoteCommandTimeout(command string, force bool) time.Duration {
+	if force {
+		return forceRemoteCommandTimeout
+	}
 	if strings.Contains(command, "/usr/local/mgr5/sbin/mgrctl -m ispmgr") {
-		return 5 * time.Minute
+		return defaultRemoteMgrctlTimeout
 	}
 	return 0
 }
@@ -809,7 +907,7 @@ func (r *remoteRunner) runWithTrace(ctx context.Context, command string, trace b
 	}
 	commandCtx := ctx
 	cancel := func() {}
-	if timeout := remoteCommandTimeout(command); timeout > 0 {
+	if timeout := remoteCommandTimeout(command, r.force); timeout > 0 {
 		commandCtx, cancel = context.WithTimeout(ctx, timeout)
 	}
 	defer cancel()
@@ -881,7 +979,7 @@ func (r *remoteRunner) runStreamingWithTrace(ctx context.Context, command string
 	}
 	commandCtx := ctx
 	cancel := func() {}
-	if timeout := remoteCommandTimeout(command); timeout > 0 {
+	if timeout := remoteCommandTimeout(command, r.force); timeout > 0 {
 		commandCtx, cancel = context.WithTimeout(ctx, timeout)
 	}
 	defer cancel()
@@ -1086,37 +1184,22 @@ func (r *remoteRunner) licenseInfo(ctx context.Context) (map[string]string, erro
 	return info, nil
 }
 
-func validateLicense(info map[string]string, webDomainCount int) error {
+func validateLicense(info map[string]string, webDomainCount int, checkWebDomains bool) error {
+	if !checkWebDomains || webDomainCount <= 10 {
+		return nil
+	}
 	panelName := info["panel_name"]
 	if panelName == "" {
 		return fmt.Errorf("%spanel_name was not returned by license.info%s", colorRed, colorReset)
 	}
-	if strings.Contains(strings.ToLower(panelName), "business") {
-		return fmt.Errorf("%sdestination panel edition is not supported: %s%s", colorRed, panelName, colorReset)
-	}
-	allowed := []string{"lite", "pro", "host"}
-	ok := false
-	for _, item := range allowed {
-		if strings.Contains(strings.ToLower(panelName), item) {
-			ok = true
-			break
-		}
-	}
-	if !ok {
-		return fmt.Errorf("%sdestination panel edition is not supported: %s%s", colorRed, panelName, colorReset)
-	}
-
-	versionSource := firstNonEmpty(info["core_info"], info["panel_info"], info["repository"])
-	if !strings.Contains(versionSource, "5.") && !strings.Contains(versionSource, "6-5.") {
-		return fmt.Errorf("%sdestination panel version is lower than ispmanager 5%s", colorRed, colorReset)
-	}
-
-	if limitText := strings.TrimSpace(info["webdomain_license_limit"]); limitText != "" {
-		if limit, err := strconv.Atoi(limitText); err == nil && limit > 0 && webDomainCount > limit {
-			return fmt.Errorf("%sdestination licence allows %d web domains, but source requires %d%s", colorRed, limit, webDomainCount, colorReset)
-		}
+	if strings.Contains(strings.ToLower(panelName), "lite") {
+		return fmt.Errorf("%sdestination panel edition %q is Lite, but %d web domains require Pro or Host licence%s", colorRed, panelName, webDomainCount, colorReset)
 	}
 	return nil
+}
+
+func destScopeIncludesWebDomains(value string) bool {
+	return hasScope(destExecutionScopesFromValue(value), "webdomains")
 }
 
 func (r *remoteRunner) featureRecords(ctx context.Context) ([]featureRecord, error) {
@@ -1159,6 +1242,7 @@ func (r *remoteRunner) runPackageStepNoUpdate(ctx context.Context, step packageS
 	return r.runAction(action, func() error {
 		r.printLaunchedCommand(command)
 		output, runErr := r.run(ctx, command)
+		r.recordPushOutput(output)
 		if strings.TrimSpace(output) != "" && consoleLevelEnabled(r.cfg.LogLevel, "info") {
 			r.ui.Println(strings.TrimSpace(output))
 		}
@@ -1166,21 +1250,32 @@ func (r *remoteRunner) runPackageStepNoUpdate(ctx context.Context, step packageS
 			return fmt.Errorf("%spackage step failed (%s): %w%s", colorRed, step.Title, runErr, colorReset)
 		}
 		if progressTracked {
-			if err := r.checkLogProgress(ctx, progressID, cursor.ispmgrOffset); err != nil {
+			if err := r.checkLogProgress(ctx, progressID, cursor.ispmgrOffset, packageProgressCheckOptions()); err != nil {
 				return err
 			}
 		}
 		if err := r.checkRecentLogErrors(ctx, cursor.ispmgrOffset, cursor.pkgOffset); err != nil {
 			return err
 		}
-		return r.waitFeatureStep(ctx, step, targetOS, progressID, &cursor)
+		if err := r.waitFeatureStep(ctx, step, targetOS, progressID, &cursor); err != nil {
+			return err
+		}
+		if isAltPHPResumeCommand(step.Command) {
+			return r.verifyAltPHPComponents(ctx, step.Command, step.ExpectedPackages, targetOS)
+		}
+		return nil
 	})
 }
 
 func (r *remoteRunner) waitFeatureStep(ctx context.Context, step packageSyncStep, targetOS string, progressID string, cursor *remoteLogCursor) error {
-	deadline := time.Now().Add(20 * time.Minute)
+	started := time.Now()
+	deadline := started.Add(defaultFeatureStepTimeout)
+	if r.force {
+		deadline = started.Add(forceFeatureStepWaitTimeout)
+	}
 	nextFeaturePoll := time.Time{}
 	nextLogCheck := time.Time{}
+	dpkgLockExtensionReported := false
 	lastInstalled := map[string]struct{}{}
 	altPHPFeatures := altPHPFeatureIDsFromStepCommand(step.Command)
 	r.printMonitoringCommand("/usr/local/mgr5/sbin/mgrctl -m ispmgr feature")
@@ -1189,6 +1284,16 @@ func (r *remoteRunner) waitFeatureStep(ctx context.Context, step packageSyncStep
 		if cursor != nil && (nextLogCheck.IsZero() || !now.Before(nextLogCheck)) {
 			if err := r.scanRecentLogs(ctx, cursor); err != nil {
 				return err
+			}
+			if cursor.dpkgLockSeen && !r.force {
+				dpkgLockDeadline := started.Add(dpkgLockFeatureStepTimeout)
+				if deadline.Before(dpkgLockDeadline) {
+					deadline = dpkgLockDeadline
+				}
+				if !dpkgLockExtensionReported {
+					r.logger.Debug("apt/dpkg cache lock was detected in pkg.log; extending current package wait timeout", "timeout", dpkgLockFeatureStepTimeout.String())
+					dpkgLockExtensionReported = true
+				}
 			}
 			nextLogCheck = now.Add(5 * time.Second)
 		}
@@ -1211,6 +1316,10 @@ func (r *remoteRunner) waitFeatureStep(ctx context.Context, step packageSyncStep
 					time.Sleep(1 * time.Second)
 					continue
 				}
+				// Alternative PHP component completeness is checked through feature.edit forms
+				// after the grouped feature.resume is idle. The feature list can lag or omit
+				// individual component package names, so do not fail here before the repair pass.
+				return nil
 			} else if strings.TrimSpace(step.Feature) != "" {
 				record := findFeatureRecord(records, step.Feature)
 				if strings.EqualFold(record.Status, "install") {
@@ -1235,14 +1344,42 @@ func (r *remoteRunner) waitFeatureStep(ctx context.Context, step packageSyncStep
 		}
 		time.Sleep(1 * time.Second)
 	}
-	missing := missingExpectedPackages(lastInstalled, step.ExpectedPackages)
-	if len(missing) > 0 {
-		return fmt.Errorf("%sfeature step %s did not finish in time; missing packages: %s%s", colorRed, step.Title, strings.Join(missing, ", "), colorReset)
+	timeoutErr := featureStepTimeoutError(step, missingExpectedPackages(lastInstalled, step.ExpectedPackages), cursor != nil && cursor.dpkgLockSeen)
+	if cursor != nil && cursor.dpkgLockSeen {
+		r.logger.Log(ctx, levelCrit, "package step timed out while apt/dpkg cache lock was present", "step", step.Title, "error", stripANSIEscapes(timeoutErr.Error()))
 	}
-	return fmt.Errorf("%sfeature step %s did not finish in time%s", colorRed, step.Title, colorReset)
+	return timeoutErr
+}
+
+func featureStepTimeoutError(step packageSyncStep, missing []string, dpkgLockSeen bool) error {
+	suffix := ""
+	if dpkgLockSeen {
+		suffix = "; apt/dpkg cache lock was detected in pkg.log and wait timed out"
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%sfeature step %s did not finish in time; missing packages: %s%s%s", colorRed, step.Title, strings.Join(missing, ", "), suffix, colorReset)
+	}
+	return fmt.Errorf("%sfeature step %s did not finish in time%s%s", colorRed, step.Title, suffix, colorReset)
 }
 
 func altPHPFeatureIDsFromStepCommand(command string) map[string]struct{} {
+	versions := altPHPVersionsFromStepCommand(command)
+	if len(versions) == 0 {
+		return nil
+	}
+	result := map[string]struct{}{}
+	for _, version := range versions {
+		result["altphp"+version] = struct{}{}
+	}
+	return result
+}
+
+func isAltPHPResumeCommand(command string) bool {
+	function, _, ok := parseMgrctlCommand(command)
+	return ok && function == "feature.resume"
+}
+
+func altPHPVersionsFromStepCommand(command string) []string {
 	function, params, ok := parseMgrctlCommand(command)
 	if !ok || function != "feature.resume" {
 		return nil
@@ -1253,15 +1390,229 @@ func altPHPFeatureIDsFromStepCommand(command string) map[string]struct{} {
 		return nil
 	}
 
-	result := map[string]struct{}{}
+	result := make([]string, 0)
+	seen := map[string]struct{}{}
 	for _, part := range strings.Split(raw, ",") {
 		name := strings.ToLower(strings.TrimSpace(part))
 		if strings.HasPrefix(name, "altphp") {
-			result[name] = struct{}{}
+			version := strings.TrimPrefix(name, "altphp")
+			if version == "" {
+				continue
+			}
+			if _, ok := seen[version]; ok {
+				continue
+			}
+			seen[version] = struct{}{}
+			result = append(result, version)
 		}
 	}
-	if len(result) == 0 {
+	return result
+}
+
+type altPHPComponentMismatch struct {
+	Version string
+	Fields  []string
+}
+
+func (m altPHPComponentMismatch) String() string {
+	command := buildMgrctlCommand("feature.edit", map[string]string{
+		"elid": "altphp" + m.Version,
+		"sok":  "ok",
+	})
+	return command + " missing " + strings.Join(m.Fields, ", ")
+}
+
+type altPHPComponentExpectation struct {
+	Version string
+	Fields  []string
+}
+
+func (r *remoteRunner) verifyAltPHPComponents(ctx context.Context, command string, expectedPackages []string, targetOS string) error {
+	expectations := altPHPComponentExpectations(command, expectedPackages)
+	if len(expectations) == 0 {
 		return nil
+	}
+	missing, err := r.missingAltPHPComponents(ctx, expectations)
+	if err != nil {
+		return err
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	r.warnLine("alternative PHP package components mismatch detected: " + altPHPComponentMismatchList(missing))
+	for _, item := range missing {
+		expectation, ok := findAltPHPComponentExpectation(expectations, item.Version)
+		if !ok {
+			continue
+		}
+		retryCommand := buildAltPHPEditCommand(expectation)
+		var cursor *remoteLogCursor
+		if r.sftpClient != nil {
+			remoteCursor := r.newRemoteLogCursor(ctx)
+			cursor = &remoteCursor
+		}
+		r.printLaunchedCommand(retryCommand)
+		output, runErr := r.run(ctx, retryCommand)
+		r.recordPushOutput(output)
+		if strings.TrimSpace(output) != "" && consoleLevelEnabled(r.cfg.LogLevel, "info") {
+			r.ui.Println(strings.TrimSpace(output))
+		}
+		if runErr != nil {
+			return fmt.Errorf("%salternative PHP component repair failed for altphp%s: %w%s", colorRed, item.Version, runErr, colorReset)
+		}
+		retryStep := packageSyncStep{
+			Title:   "packages (altphp)",
+			Feature: "altphp" + item.Version,
+			Command: retryCommand,
+		}
+		if err := r.waitFeatureStep(ctx, retryStep, targetOS, "", cursor); err != nil {
+			return err
+		}
+		afterRetry, err := r.missingAltPHPComponents(ctx, []altPHPComponentExpectation{{
+			Version: item.Version,
+			Fields:  altPHPFieldNames(item.Fields),
+		}})
+		if err != nil {
+			return err
+		}
+		if len(afterRetry) > 0 {
+			return fmt.Errorf("%salternative PHP package altphp%s is still incomplete after retry: %s%s", colorRed, item.Version, altPHPComponentMismatchList(afterRetry), colorReset)
+		}
+	}
+	return nil
+}
+
+func findAltPHPComponentExpectation(expectations []altPHPComponentExpectation, version string) (altPHPComponentExpectation, bool) {
+	for _, expectation := range expectations {
+		if expectation.Version == version {
+			return expectation, true
+		}
+	}
+	return altPHPComponentExpectation{}, false
+}
+
+func buildAltPHPEditCommand(expectation altPHPComponentExpectation) string {
+	version := strings.TrimSpace(expectation.Version)
+	params := map[string]string{
+		"elid":                                     "altphp" + version,
+		"packagegroup_altphp" + version + "gr":     "ispphp" + version,
+		"package_ispphp" + version + "_fpm":        altPHPComponentValue(expectation.Fields, "package_ispphp"+version+"_fpm"),
+		"package_ispphp" + version + "_mod_apache": altPHPComponentValue(expectation.Fields, "package_ispphp"+version+"_mod_apache"),
+		"package_ispphp" + version + "_lsapi":      altPHPComponentValue(expectation.Fields, "package_ispphp"+version+"_lsapi"),
+		"sok":                                      "ok",
+	}
+	return buildMgrctlCommand("feature.edit", params)
+}
+
+func altPHPComponentValue(fields []string, key string) string {
+	for _, field := range fields {
+		if strings.TrimSpace(field) == key {
+			return "on"
+		}
+	}
+	return "off"
+}
+
+func altPHPComponentExpectations(command string, expectedPackages []string) []altPHPComponentExpectation {
+	versions := altPHPVersionsFromStepCommand(command)
+	if len(versions) == 0 || len(expectedPackages) == 0 {
+		return nil
+	}
+	versionSet := map[string]struct{}{}
+	for _, version := range versions {
+		versionSet[version] = struct{}{}
+	}
+	fieldsByVersion := map[string][]string{}
+	seenFields := map[string]struct{}{}
+	for _, pkg := range expectedPackages {
+		name := strings.ToLower(strings.TrimSpace(pkg))
+		if !strings.HasPrefix(name, "ispphp") {
+			continue
+		}
+		for _, suffix := range []string{"_fpm", "_mod_apache", "_lsapi"} {
+			if !strings.HasSuffix(name, suffix) {
+				continue
+			}
+			version := strings.TrimSuffix(strings.TrimPrefix(name, "ispphp"), suffix)
+			if _, ok := versionSet[version]; !ok {
+				continue
+			}
+			field := "package_ispphp" + version + suffix
+			seenKey := version + "\x00" + field
+			if _, ok := seenFields[seenKey]; ok {
+				continue
+			}
+			seenFields[seenKey] = struct{}{}
+			fieldsByVersion[version] = append(fieldsByVersion[version], field)
+		}
+	}
+	result := make([]altPHPComponentExpectation, 0, len(fieldsByVersion))
+	for _, version := range versions {
+		fields := fieldsByVersion[version]
+		if len(fields) == 0 {
+			continue
+		}
+		result = append(result, altPHPComponentExpectation{Version: version, Fields: fields})
+	}
+	return result
+}
+
+func (r *remoteRunner) missingAltPHPComponents(ctx context.Context, expectations []altPHPComponentExpectation) ([]altPHPComponentMismatch, error) {
+	missing := make([]altPHPComponentMismatch, 0)
+	for _, expectation := range expectations {
+		version := expectation.Version
+		params := map[string]string{
+			"elid": "altphp" + version,
+			"out":  "text",
+		}
+		command := buildMgrctlCommand("feature.edit", params)
+		r.logger.Debug("checking alternative PHP component state", "command", command, "expected", strings.Join(expectation.Fields, ", "))
+		output, err := r.runQuiet(ctx, command)
+		if err != nil {
+			return nil, fmt.Errorf("%sfailed to inspect altphp%s feature form: %w; output: %s%s", colorRed, version, err, strings.TrimSpace(output), colorReset)
+		}
+		values := parseSimpleKeyValueOutput(output)
+		fields := make([]string, 0, 2)
+		for _, key := range expectation.Fields {
+			if !strings.EqualFold(strings.TrimSpace(values[key]), "on") {
+				fields = append(fields, key+"=on")
+			}
+		}
+		if len(fields) > 0 {
+			missing = append(missing, altPHPComponentMismatch{Version: version, Fields: fields})
+		}
+	}
+	return missing, nil
+}
+
+func parseSimpleKeyValueOutput(output string) map[string]string {
+	result := map[string]string{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		result[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	return result
+}
+
+func altPHPComponentMismatchList(items []altPHPComponentMismatch) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, item.String())
+	}
+	return strings.Join(parts, "; ")
+}
+
+func altPHPFieldNames(fields []string) []string {
+	result := make([]string, 0, len(fields))
+	for _, field := range fields {
+		result = append(result, strings.TrimSuffix(strings.TrimSpace(field), "=on"))
 	}
 	return result
 }
@@ -1638,7 +1989,14 @@ func (r *remoteRunner) prepareLiteDockerForAltDB(ctx context.Context, command st
 	if r.liteDockerPrepared {
 		return nil
 	}
-	if !shouldRunDockerInstallBeforeAltDB(r.panelName, command) {
+	if !isAlternativeMySQLDBServerCommand(command) {
+		return nil
+	}
+	if !isLitePanel(r.panelName) {
+		if err := r.ensureDockerInstalled(ctx); err != nil {
+			return err
+		}
+		r.liteDockerPrepared = true
 		return nil
 	}
 
@@ -1650,13 +2008,14 @@ func (r *remoteRunner) prepareLiteDockerForAltDB(ctx context.Context, command st
 		}), progressID)
 		r.printLaunchedCommand(dockerInstallCommand)
 		output, err := r.run(ctx, dockerInstallCommand)
+		r.recordPushOutput(output)
 		if strings.TrimSpace(output) != "" && consoleLevelEnabled(r.cfg.LogLevel, "info") {
 			r.ui.Println(strings.TrimSpace(output))
 		}
 		if err != nil {
 			return fmt.Errorf("%sdocker.install failed: %w%s", colorRed, err, colorReset)
 		}
-		if err := r.checkLogProgress(ctx, progressID, cursor.ispmgrOffset); err != nil {
+		if err := r.checkLogProgress(ctx, progressID, cursor.ispmgrOffset, packageProgressCheckOptions()); err != nil {
 			return err
 		}
 		if err := r.checkRecentLogErrors(ctx, cursor.ispmgrOffset, cursor.pkgOffset); err != nil {
@@ -1680,7 +2039,9 @@ func retryWithoutInvalidUserParam(ctx context.Context, r *remoteRunner, command 
 	delete(params, invalidParam)
 	delete(params, "progressid")
 	retryCommand := addProgressID(buildMgrctlCommand(function, params), progressID)
+	r.printLaunchedCommand(retryCommand)
 	retryOutput, retryErr := r.run(ctx, retryCommand)
+	r.recordPushOutput(retryOutput)
 	return retryOutput, retryErr, true
 }
 
@@ -1721,20 +2082,15 @@ func retryDBServerAfterDockerInstall(ctx context.Context, r *remoteRunner, comma
 		return output, err, true, nil
 	}
 	retryCommand := addProgressID(command, progressID)
+	r.printLaunchedCommand(retryCommand)
 	retryOutput, retryErr := r.run(ctx, retryCommand)
+	r.recordPushOutput(retryOutput)
 	return retryOutput, retryErr, true, nil
 }
 
 func needsDockerInstallForDBServerOutput(output string) bool {
 	lower := strings.ToLower(output)
 	return strings.Contains(lower, "notconfigured(nodocker)")
-}
-
-func shouldRunDockerInstallBeforeAltDB(panelName string, command string) bool {
-	if !isLitePanel(panelName) || !isAlternativeMySQLDBServerCommand(command) {
-		return false
-	}
-	return true
 }
 
 func isLitePanel(panelName string) bool {
@@ -1809,6 +2165,222 @@ func filterEntityCommands(commands []string) []string {
 	return filtered
 }
 
+func filterExistingEntityCommands(commands []string, inventory *remoteInventory, overwrite bool) []string {
+	if overwrite || inventory == nil {
+		return commands
+	}
+	filtered := make([]string, 0, len(commands))
+	for _, command := range commands {
+		if entityCommandExistsInInventory(command, inventory, true) {
+			continue
+		}
+		filtered = append(filtered, command)
+	}
+	return filtered
+}
+
+func (r *remoteRunner) waitEntityCommandVisible(ctx context.Context, command string) error {
+	return r.waitEntityCommandVisibleWithWait(ctx, command, waitEntityVisibilityPoll)
+}
+
+func waitEntityVisibilityPoll(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (r *remoteRunner) waitEntityCommandVisibleWithWait(ctx context.Context, command string, waitFn func(context.Context, time.Duration) error) error {
+	if !isInventoryBackedEntityCommand(command) {
+		return nil
+	}
+	if entityCommandExistsInInventory(command, r.inventory, false) {
+		return nil
+	}
+	deadline := time.Now().Add(entityVisibilityTimeout)
+	var lastErr error
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		interval := entityVisibilityPollInterval
+		if interval > remaining {
+			interval = remaining
+		}
+		if err := waitFn(ctx, interval); err != nil {
+			return err
+		}
+		r.logger.Debug("checking destination inventory for created entity", "command", command)
+		inventory, err := r.loadRemoteInventory(ctx)
+		if err != nil {
+			lastErr = err
+			r.logger.Debug("failed to load destination inventory during entity visibility check", "error", err)
+		} else {
+			r.inventory = inventory
+			if entityCommandExistsInInventory(command, inventory, false) {
+				return nil
+			}
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("%sentity was not visible on destination side after %s: %w%s", colorRed, entityVisibilityTimeout, lastErr, colorReset)
+	}
+	return fmt.Errorf("%sentity was not visible on destination side after %s: %s%s", colorRed, entityVisibilityTimeout, describeRemoteCommand(command), colorReset)
+}
+
+func isInventoryBackedEntityCommand(command string) bool {
+	function, _, ok := parseMgrctlCommand(command)
+	if !ok {
+		return false
+	}
+	switch function {
+	case "user.edit", "ftp.user.edit", "site.edit", "db.edit", "emaildomain.edit", "email.edit", "domain.edit":
+		return true
+	default:
+		return false
+	}
+}
+
+func entityCommandExistsInInventory(command string, inventory *remoteInventory, keepExistingMySQLForPasswordSync bool) bool {
+	if inventory == nil {
+		return false
+	}
+	function, params, ok := parseMgrctlCommand(command)
+	if !ok {
+		return false
+	}
+	switch function {
+	case "user.edit":
+		_, ok := inventory.users[strings.ToLower(strings.TrimSpace(params["name"]))]
+		return ok
+	case "ftp.user.edit":
+		_, ok := inventory.ftpUsers[strings.ToLower(strings.TrimSpace(params["name"]))]
+		return ok
+	case "site.edit":
+		_, ok := inventory.webSites[strings.ToLower(strings.TrimSpace(params["site_name"]))]
+		return ok
+	case "db.server.edit":
+		name := strings.TrimSpace(params["name"])
+		// Existing MySQL is intentionally kept so prepareExistingMySQLPasswordSync
+		// can update the root password from the source when it is available.
+		if keepExistingMySQLForPasswordSync && strings.EqualFold(name, "MySQL") {
+			return false
+		}
+		_, ok := inventory.dbServers[strings.ToLower(name)]
+		return ok
+	case "db.edit":
+		key := databaseInventoryKey(params["name"], params["server"])
+		if key == "::" {
+			return false
+		}
+		_, ok := inventory.databases[key]
+		return ok
+	case "emaildomain.edit":
+		_, ok := inventory.emailDomains[strings.ToLower(strings.TrimSpace(params["name"]))]
+		return ok
+	case "email.edit":
+		key := emailInventoryKey(params["name"], params["domainname"])
+		if key == "::" {
+			return false
+		}
+		_, ok := inventory.emailBoxes[key]
+		return ok
+	case "domain.edit":
+		_, ok := inventory.dnsZones[strings.ToLower(strings.TrimSpace(params["name"]))]
+		return ok
+	default:
+		return false
+	}
+}
+
+func packageStepsFromCommandGroups(groups []CommandGroup, sourcePackages []Package) []packageSyncStep {
+	steps := make([]packageSyncStep, 0, len(groups))
+	for _, group := range groups {
+		if !strings.HasPrefix(group.Title, "packages (") {
+			continue
+		}
+		for _, command := range group.Commands {
+			function, params, ok := parseMgrctlCommand(command)
+			if !ok {
+				continue
+			}
+			switch function {
+			case "feature.edit":
+				feature := strings.TrimSpace(params["elid"])
+				if feature == "" {
+					continue
+				}
+				steps = append(steps, packageSyncStep{
+					Title:   group.Title,
+					Feature: feature,
+					Command: command,
+				})
+			case "feature.resume":
+				steps = append(steps, packageSyncStep{
+					Title:            group.Title,
+					Feature:          "altphp",
+					Command:          command,
+					ExpectedPackages: altPHPExpectedPackagesForCommand(command, sourcePackages),
+				})
+			}
+		}
+	}
+	return uniquePackageSteps(steps)
+}
+
+func altPHPExpectedPackagesForCommand(command string, sourcePackages []Package) []string {
+	versions := altPHPVersionsFromStepCommand(command)
+	if len(versions) == 0 {
+		return nil
+	}
+	sourceSet := packageSetFromSource(sourcePackages)
+	expected := make([]string, 0, len(versions)*4)
+	for _, version := range versions {
+		baseName := "ispphp" + version
+		for _, name := range []string{
+			baseName,
+			baseName + "_fpm",
+			baseName + "_mod_apache",
+			baseName + "_lsapi",
+		} {
+			if hasPackage(sourceSet, name) {
+				expected = append(expected, name)
+			}
+		}
+	}
+	return sortedStrings(uniqueStringsPreserveOrder(expected))
+}
+
+func normalizePackageCommandGroupsForTargetOS(groups []CommandGroup, targetOS string) []CommandGroup {
+	if strings.TrimSpace(targetOS) == "" || len(groups) == 0 {
+		return groups
+	}
+	normalized := make([]CommandGroup, len(groups))
+	for groupIndex, group := range groups {
+		next := group
+		next.Commands = append([]string(nil), group.Commands...)
+		for commandIndex, command := range next.Commands {
+			function, params, ok := parseMgrctlCommand(command)
+			if !ok || function != "feature.edit" || strings.TrimSpace(params["elid"]) != "web" {
+				continue
+			}
+			apacheGroup := strings.TrimSpace(params["packagegroup_apache"])
+			if apacheGroup != "apache-itk" && apacheGroup != "apache-itk-ubuntu" {
+				continue
+			}
+			params["packagegroup_apache"] = apachePackageName(targetOS)
+			next.Commands[commandIndex] = buildMgrctlCommand(function, params)
+		}
+		normalized[groupIndex] = next
+	}
+	return normalized
+}
+
 func isPackageFeatureElid(elid string) bool {
 	if strings.HasPrefix(elid, "altphp") {
 		return true
@@ -1839,9 +2411,9 @@ func (r *remoteRunner) warnOnMemoryMismatch(ctx context.Context) error {
 			return fmt.Errorf("%sfailed to inspect swap state on destination server: %w%s", colorRed, err, colorReset)
 		}
 		if swapState.HasOtherNonZRAMSwap || swapState.SwapfileActive {
-			r.warnLine(fmt.Sprintf("destination memory is low: %s (swap already enabled)", humanGiB(remoteBytes)))
+			r.warnFullLine(fmt.Sprintf("destination memory is low: %s (swap already enabled)", humanGiB(remoteBytes)))
 		} else {
-			r.warnLine(fmt.Sprintf("destination memory is low: %s", humanGiB(remoteBytes)))
+			r.warnFullLine(fmt.Sprintf("destination memory is low: %s", humanGiB(remoteBytes)))
 		}
 		if !swapState.HasOtherNonZRAMSwap && (!swapState.SwapfileActive || !swapState.FstabHasSwapfile) {
 			if err := r.runAction("creating swapfile and enabling it", func() error {
@@ -1853,7 +2425,7 @@ func (r *remoteRunner) warnOnMemoryMismatch(ctx context.Context) error {
 		return nil
 	}
 	if localBytes-remoteBytes > 2*gib {
-		r.warnLine(fmt.Sprintf("destination memory (%s) is more than 2 GiB lower than source memory (%s).", humanGiB(remoteBytes), humanGiB(localBytes)))
+		r.warnFullLine(fmt.Sprintf("destination memory (%s) is more than 2 GiB lower than source memory (%s).", humanGiB(remoteBytes), humanGiB(localBytes)))
 	}
 	return nil
 }
@@ -1995,6 +2567,7 @@ func (r *remoteRunner) ensureSwapfile(ctx context.Context, state remoteSwapState
 		for _, command := range []string{"mkswap " + swapfilePath, "swapon " + swapfilePath} {
 			r.printLaunchedCommand(command)
 			output, err := r.run(ctx, command)
+			r.recordPushOutput(output)
 			if strings.TrimSpace(output) != "" && consoleLevelEnabled(r.cfg.LogLevel, "info") {
 				r.ui.Println(strings.TrimSpace(output))
 			}
@@ -2121,6 +2694,7 @@ func (r *remoteRunner) remoteFileSize(path string) (int64, error) {
 type remoteLogCursor struct {
 	ispmgrOffset int64
 	pkgOffset    int64
+	dpkgLockSeen bool
 }
 
 func (r *remoteRunner) newRemoteLogCursor(ctx context.Context) remoteLogCursor {
@@ -2143,6 +2717,10 @@ func (r *remoteRunner) scanRecentLogs(ctx context.Context, cursor *remoteLogCurs
 	}
 
 	pkgNext, err := r.forEachLogLineSince(ctx, "/usr/local/mgr5/var/pkg.log", cursor.pkgOffset, func(line string) error {
+		if isDpkgCacheLockLine(line) {
+			cursor.dpkgLockSeen = true
+			r.logger.Debug("apt/dpkg cache lock detected in package log", "line", line)
+		}
 		return r.inspectLogLine("/usr/local/mgr5/var/pkg.log", line)
 	})
 	if err == nil {
@@ -2300,15 +2878,42 @@ func (r *remoteRunner) copyConfigFile(ctx context.Context, path string) error {
 	return r.sftpClient.Chmod(path, info.Mode())
 }
 
-func (r *remoteRunner) checkLogProgress(ctx context.Context, progressID string, offset int64) error {
+func packageProgressCheckOptions() progressCheckOptions {
+	return progressCheckOptions{
+		DiscoveryTimeout:  packageProgressDiscoveryTimeout,
+		CompletionTimeout: packageProgressCompletionTimeout,
+	}
+}
+
+func entityProgressCheckOptions(command string) progressCheckOptions {
+	function, _, ok := parseMgrctlCommand(command)
+	if ok && function == "db.server.edit" {
+		return progressCheckOptions{
+			DiscoveryTimeout:    dbServerProgressDiscoveryTimeout,
+			CompletionTimeout:   dbServerProgressCompletionTimeout,
+			AllowIdleCompletion: true,
+		}
+	}
+	return progressCheckOptions{
+		DiscoveryTimeout:    entityProgressDiscoveryTimeout,
+		CompletionTimeout:   entityProgressCompletionTimeout,
+		AllowIdleCompletion: true,
+	}
+}
+
+func (r *remoteRunner) checkLogProgress(ctx context.Context, progressID string, offset int64, options progressCheckOptions) error {
 	const (
-		progressDiscoveryTimeout  = 30 * time.Second
-		progressCompletionTimeout = 20 * time.Minute
-		progressPollInterval      = 2 * time.Second
-		requiredIdlePolls         = 2
+		progressPollInterval = 2 * time.Second
+		requiredIdlePolls    = 2
 	)
-	discoveryDeadline := time.Now().Add(progressDiscoveryTimeout)
-	deadline := time.Now().Add(progressCompletionTimeout)
+	if options.DiscoveryTimeout <= 0 {
+		options.DiscoveryTimeout = packageProgressDiscoveryTimeout
+	}
+	if options.CompletionTimeout <= 0 {
+		options.CompletionTimeout = packageProgressCompletionTimeout
+	}
+	discoveryDeadline := time.Now().Add(options.DiscoveryTimeout)
+	deadline := time.Now().Add(options.CompletionTimeout)
 	state := progressLogState{
 		progressID: progressID,
 		pids:       map[int]struct{}{},
@@ -2337,7 +2942,10 @@ func (r *remoteRunner) checkLogProgress(ctx context.Context, progressID string, 
 			if time.Now().After(discoveryDeadline) {
 				return nil
 			}
-		} else if !state.hasRunningProcess() && (state.sawFinished || idlePolls >= requiredIdlePolls) {
+		} else if progressLogComplete(state, idlePolls, requiredIdlePolls, options.AllowIdleCompletion) {
+			if state.hasRunningProcess() {
+				r.logger.Debug("panel log progress became idle after successful command output", "progressid", progressID, "running_pids", len(state.pids))
+			}
 			return nil
 		}
 		time.Sleep(progressPollInterval)
@@ -2392,6 +3000,13 @@ func (s *progressLogState) consumeLine(line string) {
 
 func (s *progressLogState) hasRunningProcess() bool {
 	return len(s.pids) > 0
+}
+
+func progressLogComplete(state progressLogState, idlePolls int, requiredIdlePolls int, allowIdleCompletion bool) bool {
+	if !state.hasRunningProcess() && (state.sawFinished || idlePolls >= requiredIdlePolls) {
+		return true
+	}
+	return allowIdleCompletion && idlePolls >= requiredIdlePolls
 }
 
 func (s *progressLogState) outcome() error {
@@ -2458,24 +3073,127 @@ func (r *remoteRunner) prepareRemoteSiteCommand(ctx context.Context, command str
 	}
 
 	siteName := strings.TrimSpace(params["site_name"])
-	owner := strings.TrimSpace(params["site_owner"])
-	siteCert := strings.TrimSpace(params["site_ssl_cert"])
 	if siteName == "" {
 		return command, nil
 	}
 
-	if !r.cfg.CopyConfigs {
-		if siteCert == "" || strings.EqualFold(siteCert, "selfsigned") || strings.EqualFold(siteCert, siteName) {
-			certName, err := r.ensureSelfSignedSiteCertificate(ctx, siteName, owner)
-			if err != nil {
-				return "", err
-			}
-			siteCert = certName
-			params["site_ssl_cert"] = certName
-		}
-	}
+	delete(params, "site_ssl_cert")
+	params["site_aliases"] = normalizeSiteAliases(params["site_aliases"])
 
 	return buildMgrctlCommand(function, params), nil
+}
+
+type inactiveSSLCert struct {
+	Key  string
+	Name string
+}
+
+func (r *remoteRunner) cleanupUnusedSSLCerts(ctx context.Context) error {
+	certs, err := r.listInactiveSSLCerts(ctx)
+	if err != nil {
+		return err
+	}
+	if len(certs) == 0 {
+		r.infoLine("unused ssl certificates cleanup: no inactive certificates found")
+		return nil
+	}
+
+	command := buildUnusedSSLCertDeleteCommand(certs)
+	r.printLaunchedCommand(command)
+	output, err := r.run(ctx, command)
+	r.recordPushOutput(output)
+	if strings.TrimSpace(output) != "" && consoleLevelEnabled(r.cfg.LogLevel, "info") {
+		r.ui.Println(strings.TrimSpace(output))
+	}
+	if err != nil {
+		return fmt.Errorf("failed to delete unused SSL certificates: %w", err)
+	}
+	r.infoLine(fmt.Sprintf("unused ssl certificates cleanup: deleted %d entries", len(certs)))
+	return nil
+}
+
+func (r *remoteRunner) listInactiveSSLCerts(ctx context.Context) ([]inactiveSSLCert, error) {
+	output, err := r.run(ctx, "/usr/local/mgr5/sbin/mgrctl -m ispmgr sslcert")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list unused SSL certificates: %w", err)
+	}
+	return inactiveSSLCertsFromOutput(output), nil
+}
+
+func inactiveSSLCertsFromOutput(output string) []inactiveSSLCert {
+	result := make([]inactiveSSLCert, 0)
+	seen := map[string]struct{}{}
+	keys := []string{"owner", "key", "name", "info", "type", "valid_after", "cert_type", "active", "webdomains"}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		values := parseKeyValueLine(line, keys)
+		if !strings.EqualFold(strings.TrimSpace(values["active"]), "off") {
+			continue
+		}
+		key := strings.TrimSpace(values["key"])
+		name := strings.TrimSpace(values["name"])
+		if key == "" || name == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, inactiveSSLCert{Key: key, Name: name})
+	}
+	return result
+}
+
+func buildUnusedSSLCertDeleteCommand(certs []inactiveSSLCert) string {
+	if len(certs) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(certs))
+	for _, cert := range certs {
+		keys = append(keys, cert.Key)
+	}
+	elid := strings.Join(keys, ", ")
+	elname := certs[0].Name
+	return "/usr/local/mgr5/sbin/mgrctl -m ispmgr sslcert.delete sok=ok " + forceShellQuote("elid="+elid) + " " + shellQuote("elname="+elname)
+}
+
+func addInactiveSSLCertCleanupToWebSiteGroups(groups []CommandGroup, certs []inactiveSSLCert) []CommandGroup {
+	command := buildUnusedSSLCertDeleteCommand(certs)
+	if command == "" || len(groups) == 0 {
+		return groups
+	}
+	result := make([]CommandGroup, 0, len(groups))
+	for _, group := range groups {
+		next := group
+		next.Commands = append([]string(nil), group.Commands...)
+		if group.Title == "web sites" && groupContainsSiteEdit(next) && !groupContainsCommand(next, command) {
+			next.Commands = append([]string{command}, next.Commands...)
+		}
+		result = append(result, next)
+	}
+	return result
+}
+
+func groupContainsSiteEdit(group CommandGroup) bool {
+	for _, command := range group.Commands {
+		if isSiteEditCommand(command) {
+			return true
+		}
+	}
+	return false
+}
+
+func groupContainsCommand(group CommandGroup, command string) bool {
+	command = strings.TrimSpace(command)
+	for _, existing := range group.Commands {
+		if strings.TrimSpace(existing) == command {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *remoteRunner) ensureSelfSignedSiteCertificate(ctx context.Context, domain string, owner string) (string, error) {
@@ -2499,7 +3217,7 @@ func (r *remoteRunner) ensureSelfSignedSiteCertificate(ctx context.Context, doma
 		if runErr != nil {
 			return fmt.Errorf("%sfailed to create self-signed certificate for %s: %w%s", colorRed, domain, runErr, colorReset)
 		}
-		if err := r.checkLogProgress(ctx, progressID, logCursor.ispmgrOffset); err != nil {
+		if err := r.checkLogProgress(ctx, progressID, logCursor.ispmgrOffset, entityProgressCheckOptions(command)); err != nil {
 			return err
 		}
 		if err := r.checkRecentLogErrors(ctx, logCursor.ispmgrOffset, logCursor.pkgOffset); err != nil {
@@ -2602,6 +3320,11 @@ func isLogErrorLine(line string) bool {
 	return strings.Contains(line, " ERROR ") ||
 		strings.Contains(line, " CRIT ") ||
 		strings.Contains(line, "Failed to install package")
+}
+
+func isDpkgCacheLockLine(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	return strings.Contains(lower, "waiting for cache lock")
 }
 
 func isFeatureEditCommand(command string) bool {
@@ -2786,6 +3509,11 @@ func isDirectFeatureEditCommand(command string) bool {
 	return ok && function == "feature.edit"
 }
 
+func isSiteEditCommand(command string) bool {
+	function, _, ok := parseMgrctlCommand(command)
+	return ok && function == "site.edit"
+}
+
 func diffMgrctlCommands(sourceCommand string, remoteCommand string) string {
 	sourceFunction, sourceParams, sourceOK := parseMgrctlCommand(sourceCommand)
 	remoteFunction, remoteParams, remoteOK := parseMgrctlCommand(remoteCommand)
@@ -2831,7 +3559,8 @@ func rewriteCommandForRemoteIP(command string, ip string) string {
 	switch function {
 	case "site.edit":
 		params["site_ipaddrs"] = ip
-		params["site_ssl_cert"] = firstNonEmpty(strings.TrimSpace(params["site_name"]), "selfsigned")
+		delete(params, "site_ssl_cert")
+		params["site_aliases"] = normalizeSiteAliases(params["site_aliases"])
 	case "emaildomain.edit":
 		delete(params, "ip")
 		delete(params, "ipsrc")

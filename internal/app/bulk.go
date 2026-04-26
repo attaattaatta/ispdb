@@ -228,7 +228,7 @@ func buildBulkDatabases(cfg Config) ([]string, error) {
 	for i, name := range names {
 		server := servers[i]
 		commands = append(commands, buildMgrctlCommand("db.edit", map[string]string{
-			"charset":       "utf8mb4",
+			"charset":       databaseCharsetForType(server),
 			"confirm":       passwords[i],
 			"name":          name,
 			"owner":         owners[i],
@@ -349,7 +349,9 @@ func loadBulkList(source string, question string, expected int) ([]string, error
 		if !interactive {
 			return nil, fmt.Errorf("input count does not match required item count %d", expected)
 		}
-		fmt.Printf("%sInput count does not match required item count %d. Please enter this list again.%s\n", colorRed, expected, colorReset)
+		message := fmt.Sprintf("%sInput count does not match required item count %d. Please enter this list again.%s\n", colorRed, expected, colorReset)
+		fmt.Print(message)
+		mirrorProgramOutput(message)
 	}
 }
 

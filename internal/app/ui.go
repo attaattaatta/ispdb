@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +24,11 @@ type UI struct {
 	silent bool
 }
 
+var programOutputLog = struct {
+	sync.Mutex
+	file string
+}{}
+
 func NewUI() *UI {
 	return &UI{
 		out: os.Stdout,
@@ -36,6 +42,7 @@ func (u *UI) Println(text string) {
 		return
 	}
 	fmt.Fprintln(u.out, text)
+	mirrorProgramOutput(text + "\n")
 }
 
 func (u *UI) Info(text string) {
@@ -43,27 +50,34 @@ func (u *UI) Info(text string) {
 		return
 	}
 	fmt.Fprintln(u.out, text)
+	mirrorProgramOutput(text + "\n")
 }
 
 func (u *UI) Success(text string) {
 	if u.silent {
 		return
 	}
-	fmt.Fprintln(u.out, colorizeStatusText(text, "OK", colorGreen))
+	line := colorizeStatusText(text, "OK", colorGreen)
+	fmt.Fprintln(u.out, line)
+	mirrorProgramOutput(line + "\n")
 }
 
 func (u *UI) Warn(text string) {
 	if u.silent {
 		return
 	}
-	fmt.Fprintln(u.out, colorizeColonSuffix(text, colorYellow))
+	line := colorizeColonSuffix(text, colorYellow)
+	fmt.Fprintln(u.out, line)
+	mirrorProgramOutput(line + "\n")
 }
 
 func (u *UI) Error(text string) {
 	if u.silent {
 		return
 	}
-	fmt.Fprintln(u.err, colorizeColonSuffix(text, colorRed))
+	line := colorizeColonSuffix(text, colorRed)
+	fmt.Fprintln(u.err, line)
+	mirrorProgramOutput(line + "\n")
 }
 
 func (u *UI) PrintASCII(arts []string) {
@@ -73,7 +87,62 @@ func (u *UI) PrintASCII(arts []string) {
 	if len(arts) == 0 {
 		return
 	}
-	fmt.Fprintln(u.out, arts[u.rng.Intn(len(arts))])
+	text := arts[u.rng.Intn(len(arts))]
+	fmt.Fprintln(u.out, text)
+	mirrorProgramOutput(text + "\n")
+}
+
+func setProgramOutputLogFile(path string) {
+	programOutputLog.Lock()
+	defer programOutputLog.Unlock()
+	programOutputLog.file = strings.TrimSpace(path)
+}
+
+func programOutputLogFile() string {
+	programOutputLog.Lock()
+	defer programOutputLog.Unlock()
+	return programOutputLog.file
+}
+
+func mirrorProgramOutput(text string) {
+	if text == "" {
+		return
+	}
+	path := programOutputLogFile()
+	if path == "" {
+		return
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	_, _ = file.WriteString(stripANSIEscapes(text))
+}
+
+func MirrorProgramOutput(text string) {
+	mirrorProgramOutput(text)
+}
+
+func stripANSIEscapes(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for index := 0; index < len(value); {
+		if value[index] == 0x1b && index+1 < len(value) && value[index+1] == '[' {
+			index += 2
+			for index < len(value) {
+				ch := value[index]
+				index++
+				if ch >= '@' && ch <= '~' {
+					break
+				}
+			}
+			continue
+		}
+		builder.WriteByte(value[index])
+		index++
+	}
+	return builder.String()
 }
 
 func colorizeStatusText(text string, token string, color string) string {

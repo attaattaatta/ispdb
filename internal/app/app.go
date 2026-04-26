@@ -93,8 +93,9 @@ func (a *App) logWarn(message string, args ...any) {
 }
 
 type remoteExecutionPreview struct {
-	groups []CommandGroup
-	runner *remoteRunner
+	groups   []CommandGroup
+	commands []string
+	runner   *remoteRunner
 }
 
 type preparedSource struct {
@@ -115,6 +116,11 @@ type preparedSource struct {
 func New(cfg Config, version string, artFS embed.FS, binaryName string) (*App, error) {
 	ui := NewUI()
 	ui.silent = cfg.Silent
+	if strings.TrimSpace(cfg.LogFile) != "" && strings.TrimSpace(cfg.LogLevel) != "off" {
+		setProgramOutputLogFile(cfg.LogFile)
+	} else {
+		setProgramOutputLogFile("")
+	}
 	logger, closer, err := buildLogger(cfg.LogLevel, cfg.LogFile, cfg.Silent)
 	if err != nil {
 		return nil, err
@@ -287,9 +293,10 @@ func (a *App) prepareSectionsAndCommands(data SourceData, backupPath string, sup
 	if a.needCommands() {
 		a.logInfo("building command groups", "scopes", strings.Join(prepared.commandScopes, ","))
 		prepared.commandGroups, prepared.commandWarnings = buildCommandsForScopes(data, prepared.commandScopes, CommandBuildOptions{
-			DefaultIP: detectLocalIPv4(),
-			DefaultNS: defaultNameservers,
-			TargetOS:  detectLocalOSName(),
+			DefaultIP:   detectLocalIPv4(),
+			DefaultNS:   defaultNameservers,
+			TargetOS:    detectLocalOSName(),
+			Destination: a.cfg.DestHost != "",
 		})
 		if a.cfg.DestHost != "" {
 			prepared.commandGroups = reorderDestCommandGroups(prepared.commandGroups)
@@ -397,10 +404,10 @@ func (a *App) handleRemoteExecution(ctx context.Context, prepared preparedSource
 			return err
 		}
 		if preview.runner != nil {
-			return runRemoteWorkflowWithRunnerHook(ctx, preview.runner, prepared.data, prepared.commands)
+			return runRemoteWorkflowWithRunnerHook(ctx, preview.runner, prepared.data, preview.groups)
 		}
 	}
-	return runRemoteWorkflowHook(ctx, a.ui, a.logger, a.cfg, prepared.data, prepared.commands)
+	return runRemoteWorkflowHook(ctx, a.ui, a.logger, a.cfg, prepared.data, prepared.commandGroups)
 }
 
 func (a *App) writeExport(sections []Section, commandGroups []CommandGroup, commands []string) (int, error) {
@@ -608,7 +615,7 @@ func (a *App) buildRemoteExecutionPreview(ctx context.Context, data SourceData, 
 		groups = pruneRemoteExecutionPreviewGroups(ctx, runner, groups)
 	}
 	a.logInfo("remote execution preview ready", "groups", len(groups))
-	return remoteExecutionPreview{groups: groups, runner: runner}, nil
+	return remoteExecutionPreview{groups: groups, commands: flattenCommandGroups(groups), runner: runner}, nil
 }
 
 func (a *App) loadRemotePreviewState(ctx context.Context, runner *remoteRunner) (remotePreviewState, bool, error) {
@@ -616,6 +623,10 @@ func (a *App) loadRemotePreviewState(ctx context.Context, runner *remoteRunner) 
 	if primaryIP, err := runner.primaryIPAddress(ctx); err == nil {
 		state.primaryIP = primaryIP
 		a.logDebug("destination primary ip detected", "ip", primaryIP)
+	}
+	if osName, err := runner.remoteOSRelease(ctx); err == nil && strings.TrimSpace(osName) != "" {
+		state.targetOS = strings.TrimSpace(osName)
+		a.logDebug("destination os detected from os-release", "os", state.targetOS)
 	}
 
 	panelInstalled, err := runner.panelInstalled(ctx)
@@ -631,7 +642,9 @@ func (a *App) loadRemotePreviewState(ctx context.Context, runner *remoteRunner) 
 	if err != nil {
 		return remotePreviewState{}, false, err
 	}
-	state.targetOS = info["os"]
+	if strings.TrimSpace(info["os"]) != "" {
+		state.targetOS = info["os"]
+	}
 	state.targetPanel = info["panel_name"]
 
 	records, err := runner.featureRecords(ctx)
@@ -646,6 +659,12 @@ func (a *App) loadRemotePreviewState(ctx context.Context, runner *remoteRunner) 
 		return remotePreviewState{}, false, err
 	}
 	state.inventory = inventory
+	if certs, certErr := runner.listInactiveSSLCerts(ctx); certErr == nil {
+		state.inactiveSSLCerts = certs
+		a.logDebug("destination inactive SSL certificates loaded", "count", len(certs))
+	} else {
+		a.logDebug("failed to load destination inactive SSL certificates", "error", certErr)
+	}
 	return state, true, nil
 }
 

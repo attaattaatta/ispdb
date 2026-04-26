@@ -23,6 +23,7 @@ type CommandBuildOptions struct {
 	TargetPanel      string
 	CurrentPackages  map[string]struct{}
 	NoDeletePackages bool
+	Destination      bool
 }
 
 type dbCredential struct {
@@ -104,17 +105,18 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 			appendGroup("users", userCommands)
 			appendGroup("ftp users", ftpCommands)
 		case "webdomains":
-			certCommands := make([]string, 0)
 			groupCommands := make([]string, 0)
 			for _, item := range data.WebDomains {
-				siteSSLCert, siteCertCommands := plannedSiteSSLCert(item.Name, item.Owner, item.SSLCert)
-				certCommands = append(certCommands, siteCertCommands...)
+				siteIP := firstNonEmpty(item.IPAddr, options.DefaultIP)
+				if options.Destination && strings.TrimSpace(options.DefaultIP) != "" {
+					siteIP = options.DefaultIP
+				}
 				params := map[string]string{
-					"site_aliases":       item.Aliases,
+					"site_aliases":       normalizeSiteAliases(item.Aliases),
 					"site_autosubdomain": firstNonEmpty(item.Autosubdomain, "off"),
 					"site_basedir":       "on",
 					"site_hsts":          "on",
-					"site_ipaddrs":       firstNonEmpty(item.IPAddr, options.DefaultIP),
+					"site_ipaddrs":       siteIP,
 					"site_ipsrc":         "manual",
 					"site_limit_ssl":     "on",
 					"site_name":          item.Name,
@@ -124,7 +126,6 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 					"site_phpcomposer":   "off",
 					"site_redirect_http": firstNonEmpty(item.RedirectHTTP, "off"),
 					"site_secure":        firstNonEmpty(item.Secure, "on"),
-					"site_ssl_cert":      siteSSLCert,
 					"site_ssl_port":      "443",
 					"site_srv_cache":     "off",
 					"sok":                "ok",
@@ -136,7 +137,6 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 				}
 				groupCommands = append(groupCommands, buildMgrctlCommand("site.edit", params))
 			}
-			appendGroup("ssl certificates", uniqueStringsPreserveOrder(certCommands))
 			appendGroup("web sites", groupCommands)
 		case "databases":
 			groupCommands := make([]string, 0)
@@ -181,7 +181,7 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 					warnings = append(warnings, fmt.Sprintf("Database %s password was not available, generated a random password for commands.", item.Name))
 				}
 				groupCommands = append(groupCommands, buildMgrctlCommand("db.edit", map[string]string{
-					"charset":       "utf8mb4",
+					"charset":       databaseCharsetForServer(item.Server, data.DBServers),
 					"confirm":       password,
 					"name":          item.Name,
 					"owner":         item.Owner,
@@ -458,6 +458,24 @@ func shouldUseDBServerVersion(value string) bool {
 	return strings.Contains(value, ":")
 }
 
+func databaseCharsetForServer(server string, values []DBServer) string {
+	server = strings.TrimSpace(server)
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value.Name), server) {
+			return databaseCharsetForType(firstNonEmpty(value.Type, value.SavedVer, value.Name))
+		}
+	}
+	return databaseCharsetForType(server)
+}
+
+func databaseCharsetForType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if strings.Contains(value, "postgres") || strings.Contains(value, "pgsql") {
+		return "UTF8"
+	}
+	return "utf8mb4"
+}
+
 func randomPassword(length int) (string, error) {
 	const lowers = "abcdefghijklmnopqrstuvwxyz"
 	const uppers = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -513,6 +531,28 @@ func shuffleBytes(values []byte) error {
 
 func buildMgrctlCommand(function string, params map[string]string) string {
 	return buildMgrctlCommandWithForcedQuotes(function, params, nil)
+}
+
+func normalizeSiteAliases(value string) string {
+	fields := strings.Fields(strings.ReplaceAll(value, ",", " "))
+	if len(fields) == 0 {
+		return ""
+	}
+	result := make([]string, 0, len(fields))
+	seen := map[string]struct{}{}
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		key := strings.ToLower(field)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, field)
+	}
+	return strings.Join(result, " ")
 }
 
 func buildMgrctlCommandWithForcedQuotes(function string, params map[string]string, forceQuoteKeys map[string]struct{}) string {

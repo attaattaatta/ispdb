@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -30,6 +31,491 @@ func TestFilterEntityCommandsSkipsAltPHPFeatureResume(t *testing.T) {
 	}
 	if filtered[0] != "/usr/local/mgr5/sbin/mgrctl -m ispmgr user.edit name=alice sok=ok" {
 		t.Fatalf("unexpected filtered commands: %#v", filtered)
+	}
+}
+
+func TestRewriteCommandForRemoteIPUsesDestinationSiteForm(t *testing.T) {
+	t.Parallel()
+
+	command := "/usr/local/mgr5/sbin/mgrctl -m ispmgr site.edit sok=ok site_name=rem.biz 'site_aliases=*.rem.biz, www.rem.biz' site_ipaddrs=79.174.15.25 site_ssl_cert=rem.biz_move-2026-04-05"
+	rewritten := rewriteCommandForRemoteIP(command, "188.120.249.93")
+
+	if !strings.Contains(rewritten, "site_ipaddrs=188.120.249.93") {
+		t.Fatalf("expected destination IP in rewritten command:\n%s", rewritten)
+	}
+	if strings.Contains(rewritten, "site_ssl_cert=") {
+		t.Fatalf("did not expect site_ssl_cert in rewritten command:\n%s", rewritten)
+	}
+	if strings.Contains(rewritten, "79.174.15.25") || strings.Contains(rewritten, "rem.biz_move-2026-04-05") {
+		t.Fatalf("did not expect source IP/cert in rewritten command:\n%s", rewritten)
+	}
+	if !strings.Contains(rewritten, "'site_aliases=*.rem.biz www.rem.biz'") {
+		t.Fatalf("expected aliases to be space-separated in rewritten command:\n%s", rewritten)
+	}
+	if strings.Contains(rewritten, "site_aliases=*.rem.biz,") {
+		t.Fatalf("did not expect comma-separated aliases in rewritten command:\n%s", rewritten)
+	}
+}
+
+func TestInactiveSSLCertsFromOutputBuildsBulkDeleteCommand(t *testing.T) {
+	t.Parallel()
+
+	output := strings.Join([]string{
+		"owner=remsklad key=remsklad%#%api.remsklad.online name=api.remsklad.online info=api.remsklad.online www.api.remsklad.online type=ssl_selfsigned valid_after=2027-04-25 cert_type=ssl_selfsigned active=off",
+		"owner=simple key=simple%#%interabiz.ru name=interabiz.ru info=interabiz.ru www.interabiz.ru type=ssl_selfsigned valid_after=2027-04-25 cert_type=ssl_selfsigned active=off",
+		"owner=www-root key=www-root%#%active.example.com name=active.example.com info=active.example.com type=ssl_selfsigned active=on",
+	}, "\n")
+
+	certs := inactiveSSLCertsFromOutput(output)
+	if len(certs) != 2 {
+		t.Fatalf("expected two inactive SSL certificates, got %#v", certs)
+	}
+
+	command := buildUnusedSSLCertDeleteCommand(certs)
+	want := "/usr/local/mgr5/sbin/mgrctl -m ispmgr sslcert.delete sok=ok 'elid=remsklad%#%api.remsklad.online, simple%#%interabiz.ru' elname=api.remsklad.online"
+	if command != want {
+		t.Fatalf("unexpected sslcert.delete command:\n got: %s\nwant: %s", command, want)
+	}
+}
+
+func TestBuildUnusedSSLCertDeleteCommandDoesNotAddCommaForSingleCert(t *testing.T) {
+	t.Parallel()
+
+	command := buildUnusedSSLCertDeleteCommand([]inactiveSSLCert{{Key: "www-root%#%api.rem.biz", Name: "api.rem.biz"}})
+	want := "/usr/local/mgr5/sbin/mgrctl -m ispmgr sslcert.delete sok=ok 'elid=www-root%#%api.rem.biz' elname=api.rem.biz"
+	if command != want {
+		t.Fatalf("unexpected single sslcert.delete command:\n got: %s\nwant: %s", command, want)
+	}
+}
+
+func TestCleanupUnusedSSLCertsListsAndDeletesInactiveCerts(t *testing.T) {
+	t.Parallel()
+
+	var calls []string
+	runner := &remoteRunner{
+		cfg:    Config{LogLevel: "off"},
+		ui:     &UI{out: &bytes.Buffer{}, err: &bytes.Buffer{}},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runOverride: func(ctx context.Context, command string, trace bool) (string, error) {
+			calls = append(calls, command)
+			if command == "/usr/local/mgr5/sbin/mgrctl -m ispmgr sslcert" {
+				return "owner=www-root key=www-root%#%api.rem.biz name=api.rem.biz active=off\n", nil
+			}
+			if strings.Contains(command, "sslcert.delete") {
+				return "OK\n", nil
+			}
+			t.Fatalf("unexpected command %q", command)
+			return "", nil
+		},
+	}
+
+	if err := runner.cleanupUnusedSSLCerts(context.Background()); err != nil {
+		t.Fatalf("cleanupUnusedSSLCerts() returned error: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected sslcert list and delete commands, got %#v", calls)
+	}
+	if !strings.Contains(calls[1], "sslcert.delete") {
+		t.Fatalf("expected second command to delete inactive certs, got %#v", calls)
+	}
+}
+
+func TestValidateLicenseOnlyRejectsLiteForMoreThanTenWebDomains(t *testing.T) {
+	t.Parallel()
+
+	if err := validateLicense(map[string]string{"panel_name": "ispmanager Lite"}, 10, true); err != nil {
+		t.Fatalf("expected Lite to allow 10 web domains, got %v", err)
+	}
+	if err := validateLicense(map[string]string{"panel_name": "ispmanager Pro"}, 11, true); err != nil {
+		t.Fatalf("expected Pro to allow more than 10 web domains, got %v", err)
+	}
+	if err := validateLicense(map[string]string{"panel_name": "ispmanager Lite"}, 11, false); err != nil {
+		t.Fatalf("expected non-webdomain scope to skip Lite webdomain limit, got %v", err)
+	}
+	if err := validateLicense(map[string]string{"panel_name": "ispmanager Lite"}, 11, true); err == nil {
+		t.Fatalf("expected Lite to be rejected for more than 10 web domains")
+	}
+}
+
+func TestVerifyAltPHPComponentsRetriesMissingModule(t *testing.T) {
+	t.Parallel()
+
+	inspectCount := 0
+	retryCount := 0
+	runner := &remoteRunner{
+		cfg:    Config{LogLevel: "info"},
+		ui:     &UI{out: &bytes.Buffer{}, err: &bytes.Buffer{}},
+		logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		runOverride: func(ctx context.Context, command string, trace bool) (string, error) {
+			switch {
+			case strings.Contains(command, "feature.edit") && strings.Contains(command, "elid=altphp74") && strings.Contains(command, "out=text"):
+				inspectCount++
+				if inspectCount == 1 {
+					return "package_ispphp74_fpm=on\npackage_ispphp74_mod_apache=off\n", nil
+				}
+				return "package_ispphp74_fpm=on\npackage_ispphp74_mod_apache=on\n", nil
+			case strings.Contains(command, "feature.edit") && strings.Contains(command, "elid=altphp74") && strings.Contains(command, "packagegroup_altphp74gr=ispphp74"):
+				if !strings.Contains(command, "package_ispphp74_fpm=off") {
+					t.Fatalf("expected retry command to disable absent fpm package, got %q", command)
+				}
+				if !strings.Contains(command, "package_ispphp74_mod_apache=on") {
+					t.Fatalf("expected retry command to enable source mod_apache package, got %q", command)
+				}
+				if !strings.Contains(command, "package_ispphp74_lsapi=off") {
+					t.Fatalf("expected retry command to disable absent lsapi package, got %q", command)
+				}
+				retryCount++
+				return "OK\n", nil
+			case strings.Contains(command, "mgrctl -m ispmgr feature"):
+				return "name=altphp74 dname=altphp74 content=PHP 7.4 Apache module, PHP 7.4 PHP-FPM, PHP 7.4 common featlist=PHP 7.4 Apache module, PHP 7.4 PHP-FPM, PHP 7.4 common active=on promo=off\n", nil
+			default:
+				return "", nil
+			}
+		},
+	}
+
+	err := runner.verifyAltPHPComponents(context.Background(), "/usr/local/mgr5/sbin/mgrctl -m ispmgr feature.resume sok=ok 'elid=altphp74' 'elname=PHP 7.4 Apache module, PHP 7.4 PHP-FPM, PHP 7.4 common'", []string{"ispphp74_mod_apache"}, "Ubuntu 24.04")
+	if err != nil {
+		t.Fatalf("verifyAltPHPComponents() returned error: %v", err)
+	}
+	if retryCount != 1 {
+		t.Fatalf("expected one retry feature.edit command, got %d", retryCount)
+	}
+	if inspectCount < 2 {
+		t.Fatalf("expected post-retry inspection, got %d inspections", inspectCount)
+	}
+}
+
+func TestBuildAltPHPEditCommandSetsSourceComponentsOnAndOthersOff(t *testing.T) {
+	t.Parallel()
+
+	command := buildAltPHPEditCommand(altPHPComponentExpectation{
+		Version: "72",
+		Fields:  []string{"package_ispphp72_fpm", "package_ispphp72_lsapi"},
+	})
+	for _, want := range []string{
+		"feature.edit",
+		"sok=ok",
+		"elid=altphp72",
+		"packagegroup_altphp72gr=ispphp72",
+		"package_ispphp72_fpm=on",
+		"package_ispphp72_mod_apache=off",
+		"package_ispphp72_lsapi=on",
+	} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("expected %q in command %q", want, command)
+		}
+	}
+}
+
+func TestAltPHPComponentExpectationsUseOnlySourcePackages(t *testing.T) {
+	t.Parallel()
+
+	expectations := altPHPComponentExpectations(
+		"/usr/local/mgr5/sbin/mgrctl -m ispmgr feature.resume sok=ok 'elid=altphp72, altphp74' 'elname=PHP 7.2 Apache module, PHP 7.2 PHP-FPM, PHP 7.2 common'",
+		[]string{"ispphp72", "ispphp72_lsapi", "ispphp74", "ispphp74_fpm", "ispphp74_mod_apache"},
+	)
+	if len(expectations) != 2 {
+		t.Fatalf("expected two altphp expectations, got %#v", expectations)
+	}
+	fields := map[string][]string{}
+	for _, expectation := range expectations {
+		fields[expectation.Version] = expectation.Fields
+	}
+	if !containsString(fields["72"], "package_ispphp72_lsapi") {
+		t.Fatalf("expected package_ispphp72_lsapi to be checked, got %#v", fields["72"])
+	}
+	if containsString(fields["72"], "package_ispphp72_fpm") || containsString(fields["72"], "package_ispphp72_mod_apache") {
+		t.Fatalf("did not expect absent source package components to be checked for 72, got %#v", fields["72"])
+	}
+	if !containsString(fields["74"], "package_ispphp74_fpm") || !containsString(fields["74"], "package_ispphp74_mod_apache") {
+		t.Fatalf("expected fpm and mod_apache to be checked for 74, got %#v", fields["74"])
+	}
+	if containsString(fields["74"], "package_ispphp74_lsapi") {
+		t.Fatalf("did not expect absent lsapi source package to be checked for 74, got %#v", fields["74"])
+	}
+}
+
+func TestPackageStepsFromCommandGroupsKeepsAltPHPExpectedPackages(t *testing.T) {
+	t.Parallel()
+
+	groups := []CommandGroup{{
+		Title: "packages (altphp)",
+		Commands: []string{
+			"/usr/local/mgr5/sbin/mgrctl -m ispmgr feature.resume sok=ok 'elid=altphp72, altphp74' 'elname=PHP 7.2 Apache module, PHP 7.2 PHP-FPM, PHP 7.2 common'",
+		},
+	}}
+	steps := packageStepsFromCommandGroups(groups, []Package{
+		{Name: "ispphp72"},
+		{Name: "ispphp72_lsapi"},
+		{Name: "ispphp74"},
+		{Name: "ispphp74_fpm"},
+		{Name: "ispphp74_mod_apache"},
+	})
+	if len(steps) != 1 {
+		t.Fatalf("expected one package step, got %#v", steps)
+	}
+	for _, want := range []string{"ispphp72", "ispphp72_lsapi", "ispphp74", "ispphp74_fpm", "ispphp74_mod_apache"} {
+		if !containsString(steps[0].ExpectedPackages, want) {
+			t.Fatalf("expected %s in ExpectedPackages, got %#v", want, steps[0].ExpectedPackages)
+		}
+	}
+	if containsString(steps[0].ExpectedPackages, "ispphp74_lsapi") {
+		t.Fatalf("did not expect absent source package ispphp74_lsapi, got %#v", steps[0].ExpectedPackages)
+	}
+}
+
+func TestDestinationPackageStepsForceDoesNotBypassSatisfiedPackageFiltering(t *testing.T) {
+	t.Parallel()
+
+	runner := &remoteRunner{
+		cfg: Config{
+			DestScope: "all",
+			Force:     true,
+			LogLevel:  "info",
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runOverride: func(ctx context.Context, command string, trace bool) (string, error) {
+			if strings.Contains(command, "/usr/local/mgr5/sbin/mgrctl -m ispmgr feature") {
+				return "name=fail2ban dname=fail2ban content=fail2ban 1.1.0 featlist=fail2ban 1.1.0 active=on promo=off type=recommended\n", nil
+			}
+			return "", nil
+		},
+	}
+
+	steps, warnings, err := runner.destinationPackageSteps(context.Background(), SourceData{
+		Packages: []Package{
+			{ID: "1", Name: "fail2ban"},
+			{ID: "2", Name: "nginx"},
+		},
+	}, map[string]string{"os": "Ubuntu 24.04", "panel_name": "ispmanager Host"})
+	if err != nil {
+		t.Fatalf("destinationPackageSteps() returned error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	commands := make([]string, 0, len(steps))
+	for _, step := range steps {
+		commands = append(commands, step.Command)
+	}
+	joined := strings.Join(commands, "\n")
+	if strings.Contains(joined, "package_fail2ban=on") {
+		t.Fatalf("--force must not push satisfied fail2ban package command:\n%s", joined)
+	}
+	if !strings.Contains(joined, "package_nginx=on") {
+		t.Fatalf("expected missing nginx package command to remain:\n%s", joined)
+	}
+}
+
+func TestAltPHPComponentMismatchMessageIncludesInspectCommand(t *testing.T) {
+	t.Parallel()
+
+	message := altPHPComponentMismatch{
+		Version: "52",
+		Fields:  []string{"package_ispphp52_fpm=on"},
+	}.String()
+	want := "/usr/local/mgr5/sbin/mgrctl -m ispmgr feature.edit sok=ok elid=altphp52 missing package_ispphp52_fpm=on"
+	if message != want {
+		t.Fatalf("unexpected mismatch message:\n got: %s\nwant: %s", message, want)
+	}
+}
+
+func TestFilterExistingEntityCommandsRequiresOverwriteToPushExistingEntities(t *testing.T) {
+	t.Parallel()
+
+	commands := []string{
+		"/usr/local/mgr5/sbin/mgrctl -m ispmgr user.edit name=alice sok=ok",
+		"/usr/local/mgr5/sbin/mgrctl -m ispmgr user.edit name=bob sok=ok",
+		"/usr/local/mgr5/sbin/mgrctl -m ispmgr domain.edit name=example.com sok=ok",
+		"/usr/local/mgr5/sbin/mgrctl -m ispmgr site.edit site_name=example.com sok=ok",
+		"/usr/local/mgr5/sbin/mgrctl -m ispmgr site.edit site_name=new.example.com sok=ok",
+	}
+	inventory := &remoteInventory{
+		users:    map[string]struct{}{"alice": {}},
+		dnsZones: map[string]struct{}{"example.com": {}},
+		webSites: map[string]struct{}{"example.com": {}},
+	}
+
+	filtered := filterExistingEntityCommands(commands, inventory, false)
+	joined := strings.Join(filtered, "\n")
+	for _, unexpected := range []string{"name=alice", "domain.edit name=example.com", "site_name=example.com "} {
+		if strings.Contains(joined, unexpected) {
+			t.Fatalf("did not expect existing entity command %q without --overwrite:\n%s", unexpected, joined)
+		}
+	}
+	for _, expected := range []string{"name=bob", "site_name=new.example.com"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected missing entity command %q to remain:\n%s", expected, joined)
+		}
+	}
+
+	overwriteFiltered := filterExistingEntityCommands(commands, inventory, true)
+	if len(overwriteFiltered) != len(commands) {
+		t.Fatalf("expected --overwrite to keep all commands, got %#v", overwriteFiltered)
+	}
+}
+
+func TestFilterExistingEntityCommandsKeepsExistingMySQLForPasswordSync(t *testing.T) {
+	t.Parallel()
+
+	commands := []string{
+		"/usr/local/mgr5/sbin/mgrctl -m ispmgr db.server.edit name=MySQL sok=ok",
+		"/usr/local/mgr5/sbin/mgrctl -m ispmgr db.server.edit name=mariadb-10.11 sok=ok",
+	}
+	inventory := &remoteInventory{
+		dbServers: map[string]struct{}{
+			"mysql":         {},
+			"mariadb-10.11": {},
+		},
+	}
+
+	filtered := filterExistingEntityCommands(commands, inventory, false)
+	joined := strings.Join(filtered, "\n")
+	if !strings.Contains(joined, "name=MySQL") {
+		t.Fatalf("expected existing MySQL command to remain for password sync:\n%s", joined)
+	}
+	if strings.Contains(joined, "mariadb-10.11") {
+		t.Fatalf("did not expect existing non-MySQL db server command without --overwrite:\n%s", joined)
+	}
+}
+
+func TestEntityCommandExistsInInventoryCanVerifyExistingMySQL(t *testing.T) {
+	t.Parallel()
+
+	command := "/usr/local/mgr5/sbin/mgrctl -m ispmgr db.server.edit name=MySQL sok=ok"
+	inventory := &remoteInventory{
+		dbServers: map[string]struct{}{"mysql": {}},
+	}
+
+	if entityCommandExistsInInventory(command, inventory, true) {
+		t.Fatalf("expected filter mode to keep existing MySQL command for password sync")
+	}
+	if !entityCommandExistsInInventory(command, inventory, false) {
+		t.Fatalf("expected visibility mode to verify existing MySQL command")
+	}
+}
+
+func TestDatabaseServerEditDoesNotUseEntityVisibilityPostCheck(t *testing.T) {
+	t.Parallel()
+
+	command := "/usr/local/mgr5/sbin/mgrctl -m ispmgr db.server.edit name=mariadb-10.11 sok=ok"
+	if isInventoryBackedEntityCommand(command) {
+		t.Fatalf("db.server.edit must not use post-push remote inventory visibility checks")
+	}
+}
+
+func TestEntityProgressCheckOptionsUseShortTimeouts(t *testing.T) {
+	t.Parallel()
+
+	options := entityProgressCheckOptions("/usr/local/mgr5/sbin/mgrctl -m ispmgr site.edit site_name=example.com sok=ok")
+	if options.DiscoveryTimeout != entityProgressDiscoveryTimeout {
+		t.Fatalf("expected entity discovery timeout %s, got %s", entityProgressDiscoveryTimeout, options.DiscoveryTimeout)
+	}
+	if options.CompletionTimeout != entityProgressCompletionTimeout {
+		t.Fatalf("expected entity completion timeout %s, got %s", entityProgressCompletionTimeout, options.CompletionTimeout)
+	}
+	if !options.AllowIdleCompletion {
+		t.Fatalf("expected entity progress to allow idle completion")
+	}
+}
+
+func TestDatabaseServerProgressCheckOptionsUseLongerCompletionTimeout(t *testing.T) {
+	t.Parallel()
+
+	options := entityProgressCheckOptions("/usr/local/mgr5/sbin/mgrctl -m ispmgr db.server.edit name=mariadb-10.11 sok=ok")
+	if options.DiscoveryTimeout != dbServerProgressDiscoveryTimeout {
+		t.Fatalf("expected db.server discovery timeout %s, got %s", dbServerProgressDiscoveryTimeout, options.DiscoveryTimeout)
+	}
+	if options.CompletionTimeout != dbServerProgressCompletionTimeout {
+		t.Fatalf("expected db.server completion timeout %s, got %s", dbServerProgressCompletionTimeout, options.CompletionTimeout)
+	}
+	if !options.AllowIdleCompletion {
+		t.Fatalf("expected db.server progress to allow idle completion")
+	}
+}
+
+func TestWaitEntityCommandVisibleReloadsDestinationInventory(t *testing.T) {
+	calls := 0
+	waits := make([]time.Duration, 0, 1)
+	runner := &remoteRunner{
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		inventory: &remoteInventory{},
+		loadInventoryOverride: func(ctx context.Context) (*remoteInventory, error) {
+			calls++
+			return &remoteInventory{
+				webSites: map[string]struct{}{"telemaster.spb.ru": {}},
+			}, nil
+		},
+	}
+
+	err := runner.waitEntityCommandVisibleWithWait(
+		context.Background(),
+		"/usr/local/mgr5/sbin/mgrctl -m ispmgr site.edit site_name=telemaster.spb.ru sok=ok",
+		func(ctx context.Context, interval time.Duration) error {
+			waits = append(waits, interval)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("waitEntityCommandVisible() returned error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one destination inventory reload, got %d", calls)
+	}
+	if len(waits) != 1 || waits[0] != entityVisibilityPollInterval {
+		t.Fatalf("expected first inventory reload after %s, got %#v", entityVisibilityPollInterval, waits)
+	}
+}
+
+func TestConfirmPanelInstallForceStillAsksUser(t *testing.T) {
+	originalAsk := askYesNoWithColorHook
+	t.Cleanup(func() {
+		askYesNoWithColorHook = originalAsk
+	})
+
+	asked := false
+	askYesNoWithColorHook = func(question string, defaultNo bool, color string) (bool, error) {
+		asked = true
+		if question != "ispmanager was not found on destination server. Install it?" {
+			t.Fatalf("unexpected question %q", question)
+		}
+		if !defaultNo {
+			t.Fatalf("expected default answer to be no")
+		}
+		return false, nil
+	}
+
+	install, err := confirmPanelInstall(Config{Force: true})
+	if err != nil {
+		t.Fatalf("confirmPanelInstall() returned error: %v", err)
+	}
+	if install {
+		t.Fatalf("expected --force without -y to keep user confirmation result")
+	}
+	if !asked {
+		t.Fatalf("expected --force without -y to ask before installing panel")
+	}
+}
+
+func TestConfirmPanelInstallAutoYesSkipsUserQuestion(t *testing.T) {
+	originalAsk := askYesNoWithColorHook
+	t.Cleanup(func() {
+		askYesNoWithColorHook = originalAsk
+	})
+
+	askYesNoWithColorHook = func(question string, defaultNo bool, color string) (bool, error) {
+		t.Fatalf("did not expect prompt when -y is set")
+		return false, nil
+	}
+
+	install, err := confirmPanelInstall(Config{AutoYes: true})
+	if err != nil {
+		t.Fatalf("confirmPanelInstall() returned error: %v", err)
+	}
+	if !install {
+		t.Fatalf("expected -y to allow automatic panel install")
 	}
 }
 
@@ -90,6 +576,26 @@ func TestWarnPackageWarningAddsTrailingBlankLineAtInfoForDockerSkip(t *testing.T
 	}
 }
 
+func TestWarnFullLineColorsDestinationMemoryMismatchAsWarning(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	runner := &remoteRunner{
+		cfg: Config{LogLevel: "info"},
+		ui:  &UI{out: &out, err: &out},
+	}
+
+	runner.warnFullLine("destination memory (1.91 GiB) is more than 2 GiB lower than source memory (11.60 GiB).")
+
+	got := out.String()
+	if !strings.Contains(got, colorYellow) {
+		t.Fatalf("expected warning output to contain yellow color, got %q", got)
+	}
+	if !strings.Contains(got, "destination memory (1.91 GiB) is more than 2 GiB lower than source memory (11.60 GiB).") {
+		t.Fatalf("expected warning text in output, got %q", got)
+	}
+}
+
 func TestRecordSummarySuccessDeduplicates(t *testing.T) {
 	t.Parallel()
 
@@ -99,6 +605,25 @@ func TestRecordSummarySuccessDeduplicates(t *testing.T) {
 
 	if len(runner.summarySuccesses) != 1 {
 		t.Fatalf("expected one deduplicated summary success, got %#v", runner.summarySuccesses)
+	}
+}
+
+func TestRecordFailureStoresLastPushCommand(t *testing.T) {
+	t.Parallel()
+
+	runner := &remoteRunner{}
+	runner.printLaunchedCommand("/usr/local/mgr5/sbin/mgrctl -m ispmgr site.edit sok=ok")
+	runner.recordPushOutput("ERROR value(site_name): invalid domain\n")
+	runner.recordFailure("adding web site rem.biz", errors.New("Process exited with status 1"))
+
+	if len(runner.failures) != 1 {
+		t.Fatalf("expected one failure, got %#v", runner.failures)
+	}
+	if runner.failures[0].PushCommand != "/usr/local/mgr5/sbin/mgrctl -m ispmgr site.edit sok=ok" {
+		t.Fatalf("expected failure push command to be stored, got %#v", runner.failures[0])
+	}
+	if runner.failures[0].PushOutput != "ERROR value(site_name): invalid domain" {
+		t.Fatalf("expected failure push output to be stored, got %#v", runner.failures[0])
 	}
 }
 
@@ -128,11 +653,47 @@ func TestPrintLaunchedCommandMirrorsToLogFile(t *testing.T) {
 }
 
 func TestRemoteCommandTimeoutAppliesOnlyToMgrctl(t *testing.T) {
-	if remoteCommandTimeout("/usr/local/mgr5/sbin/mgrctl -m ispmgr feature") != 5*time.Minute {
-		t.Fatalf("expected mgrctl timeout to be 5 minutes")
+	if remoteCommandTimeout("/usr/local/mgr5/sbin/mgrctl -m ispmgr feature", false) != defaultRemoteMgrctlTimeout {
+		t.Fatalf("expected mgrctl timeout to be %s", defaultRemoteMgrctlTimeout)
 	}
-	if remoteCommandTimeout("bash -lc 'apt-get update && apt-get install -y wget'") != 0 {
+	if remoteCommandTimeout("/usr/local/mgr5/sbin/mgrctl -m ispmgr feature", true) != forceRemoteCommandTimeout {
+		t.Fatalf("expected forced mgrctl timeout to be %s", forceRemoteCommandTimeout)
+	}
+	aptCommand := "bash -lc 'apt-get update && apt-get install -y wget'"
+	if remoteCommandTimeout(aptCommand, false) != 0 {
 		t.Fatalf("expected non-mgrctl command to have no forced timeout")
+	}
+	if remoteCommandTimeout(aptCommand, true) != forceRemoteCommandTimeout {
+		t.Fatalf("expected forced non-mgrctl command timeout to be %s", forceRemoteCommandTimeout)
+	}
+}
+
+func TestIsDpkgCacheLockLineDetectsAnyAptDpkgLockHolder(t *testing.T) {
+	line := "Waiting for cache lock: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 1687 (unattended-upgr)..."
+	for _, item := range []string{
+		line,
+		"Waiting for cache lock: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 42 (apt-get)...",
+		"Waiting for cache lock: package manager is busy",
+	} {
+		if !isDpkgCacheLockLine(item) {
+			t.Fatalf("expected apt/dpkg cache lock line to be detected: %q", item)
+		}
+	}
+	if isDpkgCacheLockLine("ERROR value(packagegroup_apache): The 'Apache' field has invalid value.") {
+		t.Fatalf("expected unrelated package error line to stay ignored")
+	}
+}
+
+func TestFeatureStepTimeoutErrorMentionsDpkgLockWhenDetected(t *testing.T) {
+	t.Parallel()
+
+	err := featureStepTimeoutError(packageSyncStep{Title: "packages (web)"}, []string{"nginx"}, true)
+	got := stripANSI(err.Error())
+	if !strings.Contains(got, "feature step packages (web) did not finish in time") {
+		t.Fatalf("expected feature timeout message, got %q", got)
+	}
+	if !strings.Contains(got, "apt/dpkg cache lock was detected in pkg.log and wait timed out") {
+		t.Fatalf("expected dpkg lock timeout context, got %q", got)
 	}
 }
 

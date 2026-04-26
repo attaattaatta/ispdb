@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.4-beta
+
+- aligned `--dest` preview and real execution so the exact command groups shown before confirmation are the ones that get pushed afterwards, including package groups
+- package groups during `--dest` now use normalized destination-state checks only to decide `skip` vs `run`; when a group differs, the full group command is pushed instead of a diff command
+- highlighted destination memory warnings in yellow to make low-memory and source-vs-destination memory mismatch messages stand out during remote runs
+- for alternative MySQL/MariaDB `db.server.edit` commands on `33XX` ports, destination Docker support is now prepared once in advance before the first database-server command instead of being enabled only after a later failure path
+- destination package commands now detect the target OS from `/etc/os-release` before panel installation and recheck it from `license.info` after installation, so Apache package group names are normalized correctly on clean Ubuntu destinations
+- web-domain command generation no longer emits the `ssl certificates` command group, and ordinary generated/executed `site.edit` migration commands now omit `site_ssl_cert` entirely; bulk web-domain commands are unchanged
+- destination licence validation now has one web-domain rule: Lite is rejected only when the selected migration includes more than 10 web domains
+- log files now mirror the user-facing program output, including banners, prompts, planned commands, remote progress, and summaries, while debug diagnostics remain available through the structured logger
+- alternative PHP package installation now verifies only source-present per-version `fpm`, `mod_apache`, and `lsapi` toggles after grouped `feature.resume`, then retries incomplete versions once before failing
+- fixed the destination runtime path so altphp component expectations survive conversion from preview command groups to executable package steps, and debug logs now show each altphp component inspection command
+- altphp component retry now uses `feature.edit` with `packagegroup_altphpXXgr=ispphpXX` and explicit `fpm` / `mod_apache` / `lsapi` on/off values based on source packages
+- altphp package waiting now stops after the grouped panel operation becomes idle and lets the dedicated component post-check/repair pass handle missing `fpm`, `mod_apache`, and `lsapi` toggles instead of timing out before retry
+- remote summaries now include the SSH push command that caused each recorded failure and its command output, or `none` when the command produced no output
+- destination package waits now detect repeated `Waiting for cache lock` lines in `/usr/local/mgr5/var/pkg.log` and extend the current package wait to 30 minutes without changing the existing command timeout values
+- generated and executed `site.edit` commands now write `site_aliases` as a space-separated list without commas
+- `--list all` and default `--dest` scope order now place `dns` before `web domains` / `web sites`
+- `--dest --force` now uses the same package filtering as a normal destination run and only changes error handling behavior
+- generated PostgreSQL `db.edit` commands now use `charset=UTF8` instead of MySQL-specific `charset=utf8mb4`
+- `--dest --force` no longer tries to process entity commands that already exist on the destination; pushing existing users, DNS zones, web sites, and other entities remains reserved for `--overwrite`
+- `--force` no longer auto-confirms ispmanager installation on a clean destination; automatic confirmation remains limited to `-y, --yes`
+- repeated apt/dpkg cache-lock lines from `pkg.log` are now logged only at debug level, while package wait timeouts after a detected cache lock are emitted as critical log events
+- successful destination entity commands such as `site.edit` no longer wait for the full panel progress timeout when `mgrctl` returned `OK` and the panel log became idle without a matching process-finished line
+- destination entity migrations, except database-server commands, now verify the created object through the remote inventory every 2 seconds for up to one minute after a successful push, avoiding progress-log stalls when ispmanager logs only the request line
+- destination entity progress checks now use short `progressid` waits, with 5 seconds for discovery and 30 seconds for normal entities; `db.server.edit` keeps a longer 3-minute completion timeout
+- before the first ordinary destination `site.edit`, inactive SSL certificates from the destination panel are collected by `key` and deleted in one logged `sslcert.delete` command with `elname` set from the first inactive certificate; the same cleanup command is shown first in destination command previews/lists when web-site commands are present
+
 ## 0.4.3-beta
 
 - removed the old hidden `--export-data` switch completely and made `-e, --export` the only export selector

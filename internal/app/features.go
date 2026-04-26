@@ -8,14 +8,14 @@ import (
 )
 
 type featureRecord struct {
-	Name    string
-	DName   string
-	Content string
+	Name     string
+	DName    string
+	Content  string
 	FeatList string
-	Active  string
-	Promo   string
-	Type    string
-	Status  string
+	Active   string
+	Promo    string
+	Type     string
+	Status   string
 	BadState string
 }
 
@@ -46,14 +46,14 @@ func parseFeatureRecords(output string) []featureRecord {
 			continue
 		}
 		records = append(records, featureRecord{
-			Name:    values["name"],
-			DName:   values["dname"],
-			Content: values["content"],
+			Name:     values["name"],
+			DName:    values["dname"],
+			Content:  values["content"],
 			FeatList: values["featlist"],
-			Active:  values["active"],
-			Promo:   values["promo"],
-			Type:    values["type"],
-			Status:  values["status"],
+			Active:   values["active"],
+			Promo:    values["promo"],
+			Type:     values["type"],
+			Status:   values["status"],
 			BadState: values["badstate"],
 		})
 	}
@@ -315,10 +315,6 @@ func buildPackageSyncSteps(sourcePackages []Package, currentPackages map[string]
 			if packageFeatureStateMatches(feature, effectiveParams, currentPackages) {
 				return
 			}
-			effectiveParams = filterPackageParamsByDifference(feature, effectiveParams, currentPackages)
-			if len(effectiveParams) == 0 {
-				return
-			}
 		}
 		effectiveParams["elid"] = feature
 		effectiveParams["sok"] = "ok"
@@ -524,24 +520,16 @@ func buildPackageCommandGroups(sourcePackages []Package, targetOS string, target
 }
 
 func buildPackageCommandGroupsWithCurrent(sourcePackages []Package, targetOS string, targetPanel string, currentPackages map[string]struct{}, noDeletePackages bool) ([]CommandGroup, []string) {
-	steps, warnings := buildPackageSyncSteps(sourcePackages, map[string]struct{}{}, packagePlanOptions{
+	steps, warnings := buildPackageSyncSteps(sourcePackages, currentPackages, packagePlanOptions{
 		TargetOS:         targetOS,
 		TargetPanel:      targetPanel,
 		NoDeletePackages: noDeletePackages,
 		SkipSatisfied:    len(currentPackages) > 0,
 	})
-	if len(currentPackages) > 0 {
-		steps, warnings = buildPackageSyncSteps(sourcePackages, currentPackages, packagePlanOptions{
-			TargetOS:         targetOS,
-			TargetPanel:      targetPanel,
-			NoDeletePackages: noDeletePackages,
-			SkipSatisfied:    true,
-		})
-	}
 	groups := make([]CommandGroup, 0, len(steps))
 	for _, step := range steps {
 		groups = append(groups, CommandGroup{
-			Title: step.Title,
+			Title:    step.Title,
 			Commands: []string{step.Command},
 		})
 	}
@@ -746,10 +734,10 @@ func buildAltPHPStep(sourceSet map[string]struct{}, currentPackages map[string]s
 	if len(versions) == 0 {
 		return nil
 	}
-	expectedAll := make([]string, 0, len(versions)*2)
-	openLiteSpeed := hasPackage(sourceSet, "openlitespeed") || hasPackage(sourceSet, "openlitespeed-php")
+	expectedAll := make([]string, 0, len(versions)*4)
 	elids := make([]string, 0, len(versions))
 	sampleVersion := ""
+	allSatisfied := true
 	for _, version := range versions {
 		baseName := "ispphp" + version
 		wantBase := hasPackage(sourceSet, baseName) || hasPackage(sourceSet, baseName+"_lsapi")
@@ -757,14 +745,15 @@ func buildAltPHPStep(sourceSet map[string]struct{}, currentPackages map[string]s
 			continue
 		}
 
+		fpmWanted := hasPackage(sourceSet, baseName+"_fpm")
+		modApacheWanted := hasPackage(sourceSet, baseName+"_mod_apache")
 		lsapiWanted := hasPackage(sourceSet, baseName+"_lsapi")
-		if openLiteSpeed && wantBase {
-			lsapiWanted = true
-		}
 		currentBase := hasPackage(currentPackages, baseName) || hasPackage(currentPackages, baseName+"_lsapi")
+		currentFPM := hasPackage(currentPackages, baseName+"_fpm")
+		currentModApache := hasPackage(currentPackages, baseName+"_mod_apache")
 		currentLSAPI := hasPackage(currentPackages, baseName+"_lsapi")
-		if options.SkipSatisfied && currentBase == wantBase && currentLSAPI == lsapiWanted {
-			continue
+		if currentBase != wantBase || currentFPM != fpmWanted || currentModApache != modApacheWanted || currentLSAPI != lsapiWanted {
+			allSatisfied = false
 		}
 
 		expected := []string{}
@@ -775,12 +764,21 @@ func buildAltPHPStep(sourceSet map[string]struct{}, currentPackages map[string]s
 				sampleVersion = version
 			}
 		}
+		if fpmWanted {
+			expected = append(expected, baseName+"_fpm")
+		}
+		if modApacheWanted {
+			expected = append(expected, baseName+"_mod_apache")
+		}
 		if lsapiWanted {
 			expected = append(expected, baseName+"_lsapi")
 		}
 		expectedAll = append(expectedAll, expected...)
 	}
 	if len(elids) == 0 || sampleVersion == "" {
+		return nil
+	}
+	if options.SkipSatisfied && allSatisfied {
 		return nil
 	}
 
