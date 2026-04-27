@@ -612,7 +612,7 @@ func (a *App) buildRemoteExecutionPreview(ctx context.Context, data SourceData, 
 	groups, _ := buildRemoteExecutionPreviewGroups(data, commandScopes, a.cfg, state)
 	if panelInstalled {
 		a.logDebug("pruning remote preview commands using destination forms", "groups", len(groups))
-		groups = pruneRemoteExecutionPreviewGroups(ctx, runner, groups)
+		groups = pruneRemoteExecutionPreviewGroups(ctx, runner, groups, state.inventory)
 	}
 	a.logInfo("remote execution preview ready", "groups", len(groups))
 	return remoteExecutionPreview{groups: groups, commands: flattenCommandGroups(groups), runner: runner}, nil
@@ -668,7 +668,7 @@ func (a *App) loadRemotePreviewState(ctx context.Context, runner *remoteRunner) 
 	return state, true, nil
 }
 
-func pruneRemoteExecutionPreviewGroups(ctx context.Context, runner *remoteRunner, groups []CommandGroup) []CommandGroup {
+func pruneRemoteExecutionPreviewGroups(ctx context.Context, runner *remoteRunner, groups []CommandGroup, inventory *remoteInventory) []CommandGroup {
 	if runner == nil || len(groups) == 0 {
 		return groups
 	}
@@ -694,6 +694,9 @@ func pruneRemoteExecutionPreviewGroups(ctx context.Context, runner *remoteRunner
 					prunedGroup.Commands[index] = prunedStep.Command
 				}
 			case supportsFormPruning(function):
+				if shouldSkipFormPruningForEmptyInventory(function, inventory) {
+					continue
+				}
 				prunedCommand, _, err := runner.pruneEntityCommand(ctx, command)
 				if err == nil {
 					prunedGroup.Commands[index] = prunedCommand
@@ -703,6 +706,22 @@ func pruneRemoteExecutionPreviewGroups(ctx context.Context, runner *remoteRunner
 		result = append(result, prunedGroup)
 	}
 	return result
+}
+
+func shouldSkipFormPruningForEmptyInventory(function string, inventory *remoteInventory) bool {
+	if inventory == nil {
+		return false
+	}
+	switch function {
+	case "ftp.user.edit":
+		return len(inventory.ftpUsers) == 0
+	case "domain.edit":
+		return len(inventory.dnsZones) == 0
+	case "db.edit":
+		return len(inventory.databases) == 0
+	default:
+		return false
+	}
 }
 
 func (a *App) printLoadedSource(backupPath string, data SourceData) {

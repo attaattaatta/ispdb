@@ -331,9 +331,11 @@ func buildPackageSyncSteps(sourcePackages []Package, currentPackages map[string]
 	warnings = append(warnings, webWarnings...)
 	appendStep("packages (web)", "web", webParams, webExpected...)
 
-	emailParams, emailExpected, emailWarnings := buildEmailFeatureParams(sourceSet, currentPackages, options)
-	warnings = append(warnings, emailWarnings...)
-	appendStep("packages (email)", "email", emailParams, emailExpected...)
+	mysqlParams, mysqlExpected, mysqlWarnings, mysqlShouldRun := buildMySQLFeatureParams(sourceSet, currentPackages, options)
+	warnings = append(warnings, mysqlWarnings...)
+	if mysqlShouldRun {
+		appendStep("packages (mysql)", "mysql", mysqlParams, mysqlExpected...)
+	}
 
 	dnsParams, dnsExpected, dnsWarnings := buildExclusiveGroupParams("dns", "packagegroup_dns", []string{"bind", "powerdns"}, "off", sourceSet, currentPackages, options)
 	warnings = append(warnings, dnsWarnings...)
@@ -343,11 +345,9 @@ func buildPackageSyncSteps(sourcePackages []Package, currentPackages map[string]
 	warnings = append(warnings, ftpWarnings...)
 	appendStep("packages (ftp)", "ftp", ftpParams, ftpExpected...)
 
-	mysqlParams, mysqlExpected, mysqlWarnings, mysqlShouldRun := buildMySQLFeatureParams(sourceSet, currentPackages, options)
-	warnings = append(warnings, mysqlWarnings...)
-	if mysqlShouldRun {
-		appendStep("packages (mysql)", "mysql", mysqlParams, mysqlExpected...)
-	}
+	emailParams, emailExpected, emailWarnings := buildEmailFeatureParams(sourceSet, currentPackages, options)
+	warnings = append(warnings, emailWarnings...)
+	appendStep("packages (email)", "email", emailParams, emailExpected...)
 
 	if params, expected := buildSingleFeatureParams("postgresql", "package_postgresql", "postgresql", sourceSet, currentPackages, options); len(params) > 0 {
 		appendStep("packages (postgresql)", "postgresql", params, expected...)
@@ -519,6 +519,47 @@ func buildPackageCommandGroups(sourcePackages []Package, targetOS string, target
 	return buildPackageCommandGroupsWithCurrent(sourcePackages, targetOS, targetPanel, nil, false)
 }
 
+func packagesWithDBServerDefaults(sourcePackages []Package, dbServers []DBServer) []Package {
+	desired := mysqlPackageFromDBServers(dbServers)
+	if desired == "" {
+		return sourcePackages
+	}
+
+	result := make([]Package, 0, len(sourcePackages)+1)
+	found := false
+	for _, item := range sourcePackages {
+		name := strings.ToLower(strings.TrimSpace(item.Name))
+		switch name {
+		case "mysql-server", "mariadb-server":
+			if !found {
+				copyItem := item
+				copyItem.Name = desired
+				result = append(result, copyItem)
+				found = true
+			}
+		default:
+			result = append(result, item)
+		}
+	}
+	if !found {
+		result = append(result, Package{Name: desired})
+	}
+	return result
+}
+
+func mysqlPackageFromDBServers(dbServers []DBServer) string {
+	for _, server := range dbServers {
+		if !strings.EqualFold(strings.TrimSpace(server.Name), "MySQL") || !strings.EqualFold(strings.TrimSpace(server.Type), "mysql") {
+			continue
+		}
+		if strings.Contains(strings.ToLower(server.SavedVer), "mariadb") {
+			return "mariadb-server"
+		}
+		return "mysql-server"
+	}
+	return ""
+}
+
 func buildPackageCommandGroupsWithCurrent(sourcePackages []Package, targetOS string, targetPanel string, currentPackages map[string]struct{}, noDeletePackages bool) ([]CommandGroup, []string) {
 	steps, warnings := buildPackageSyncSteps(sourcePackages, currentPackages, packagePlanOptions{
 		TargetOS:         targetOS,
@@ -682,7 +723,9 @@ func buildMySQLFeatureParams(sourceSet map[string]struct{}, currentPackages map[
 		return params, expected, warnings, false
 	}
 	desired := ""
-	if hasPackage(sourceSet, "mariadb-server") {
+	if targetOSIsDebian(options.TargetOS) && (hasPackage(sourceSet, "mysql-server") || hasPackage(sourceSet, "mariadb-server")) {
+		desired = "mariadb-server"
+	} else if hasPackage(sourceSet, "mariadb-server") {
 		desired = "mariadb-server"
 	} else if hasPackage(sourceSet, "mysql-server") {
 		desired = "mysql-server"
@@ -693,6 +736,10 @@ func buildMySQLFeatureParams(sourceSet map[string]struct{}, currentPackages map[
 	params["packagegroup_mysql"] = desired
 	expected = append(expected, desired)
 	return params, expected, warnings, true
+}
+
+func targetOSIsDebian(targetOS string) bool {
+	return strings.Contains(strings.ToLower(targetOS), "debian")
 }
 
 func buildSingleFeatureParams(feature string, paramName string, packageName string, sourceSet map[string]struct{}, currentPackages map[string]struct{}, options packagePlanOptions) (map[string]string, []string) {

@@ -236,6 +236,27 @@ func TestBuildCommandsForScopesPreserveRequestedOrder(t *testing.T) {
 	}
 }
 
+func TestBuildCommandsForPackagesUsesDBServerSavedVersionForMySQLFamily(t *testing.T) {
+	t.Parallel()
+
+	data := SourceData{
+		Packages:  []Package{{Name: "mysql-server"}},
+		DBServers: []DBServer{{Name: "MySQL", Type: "mysql", SavedVer: "11.1.29-MariaDB-123"}},
+	}
+
+	groups, warnings := buildCommandsForScopes(data, []string{"packages"}, CommandBuildOptions{})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	joined := strings.Join(flattenCommandGroups(groups), "\n")
+	if !strings.Contains(joined, "packagegroup_mysql=mariadb-server") {
+		t.Fatalf("expected MariaDB install command from database server savedver, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "packagegroup_mysql=mysql-server") {
+		t.Fatalf("did not expect mysql-server command when source savedver is MariaDB, got:\n%s", joined)
+	}
+}
+
 func TestBuildCommandsForUsersScopeSplitsUsersAndFTPUsersGroups(t *testing.T) {
 	t.Parallel()
 

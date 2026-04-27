@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/rand"
@@ -411,13 +412,44 @@ func TestPruneRemoteExecutionPreviewGroupsUsesDestinationFeatureForm(t *testing.
 		},
 	}}
 
-	pruned := pruneRemoteExecutionPreviewGroups(context.Background(), runner, groups)
+	pruned := pruneRemoteExecutionPreviewGroups(context.Background(), runner, groups, nil)
 	got := pruned[0].Commands[0]
 	if !strings.Contains(got, "package_openlitespeed-php=on") {
 		t.Fatalf("expected package_openlitespeed-php to remain in preview alongside package_openlitespeed=on, got %q", got)
 	}
 	if !strings.Contains(got, "package_nginx=off") || !strings.Contains(got, "packagegroup_apache=turn_off") {
 		t.Fatalf("expected supported diff params to stay in preview, got %q", got)
+	}
+}
+
+func TestPruneRemoteExecutionPreviewGroupsSkipsEmptyInventoryEntityForms(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	runner := &remoteRunner{
+		logger: slog.Default(),
+		runOverride: func(ctx context.Context, command string, trace bool) (string, error) {
+			called = true
+			return "", fmt.Errorf("unexpected form probe: %s", command)
+		},
+	}
+	inventory := &remoteInventory{
+		ftpUsers:  map[string]struct{}{},
+		dnsZones:  map[string]struct{}{},
+		databases: map[string]struct{}{},
+	}
+	groups := []CommandGroup{
+		{Title: "users", Commands: []string{"/usr/local/mgr5/sbin/mgrctl -m ispmgr ftp.user.edit name=ftp1 sok=ok"}},
+		{Title: "dns", Commands: []string{"/usr/local/mgr5/sbin/mgrctl -m ispmgr domain.edit name=example.com sok=ok"}},
+		{Title: "databases", Commands: []string{"/usr/local/mgr5/sbin/mgrctl -m ispmgr db.edit name=db1 sok=ok"}},
+	}
+
+	pruned := pruneRemoteExecutionPreviewGroups(context.Background(), runner, groups, inventory)
+	if called {
+		t.Fatalf("did not expect form probes for empty remote inventory")
+	}
+	if got := strings.Join(flattenCommandGroups(pruned), "\n"); !strings.Contains(got, "ftp.user.edit") || !strings.Contains(got, "domain.edit") || !strings.Contains(got, "db.edit") {
+		t.Fatalf("expected commands to stay intact, got:\n%s", got)
 	}
 }
 

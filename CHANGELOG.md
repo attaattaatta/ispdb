@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.5-beta
+
+- remote summaries now receive the final workflow error, so licence validation failures and similar fatal errors render `SUMMARY` as an error state
+- destination command preview and execution skip `ftp.user.edit`, `domain.edit`, and `db.edit` form-probe API calls when the corresponding remote inventory tables are empty, avoiding noisy errors on fresh panels
+- package planning now installs MySQL immediately after web packages, keeps email services below MySQL, and chooses `mariadb-server` vs `mysql-server` for the main `MySQL` feature from the source `database servers.savedver`
+- Debian destinations now always use `packagegroup_mysql=mariadb-server` for the main MySQL feature install command and pushed package step
+
 ## 0.4.4-beta
 
 - aligned `--dest` preview and real execution so the exact command groups shown before confirmation are the ones that get pushed afterwards, including package groups

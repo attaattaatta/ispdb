@@ -164,6 +164,112 @@ func TestBuildPackageCommandGroupsSkipsEmptyDNSGroup(t *testing.T) {
 	}
 }
 
+func TestBuildPackageSyncStepsPlacesMySQLImmediatelyAfterWeb(t *testing.T) {
+	t.Parallel()
+
+	steps, warnings := buildPackageSyncSteps(
+		[]Package{
+			{Name: "nginx"},
+			{Name: "exim"},
+			{Name: "dovecot"},
+			{Name: "mysql-server"},
+		},
+		map[string]struct{}{},
+		packagePlanOptions{TargetOS: "Ubuntu 24.04", TargetPanel: "ispmanager Lite"},
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	mysqlIndex := -1
+	emailIndex := -1
+	webIndex := -1
+	for index, step := range steps {
+		switch step.Feature {
+		case "web":
+			webIndex = index
+		case "mysql":
+			mysqlIndex = index
+		case "email":
+			emailIndex = index
+		}
+	}
+	if mysqlIndex == -1 || emailIndex == -1 {
+		t.Fatalf("expected mysql and email steps, got %#v", steps)
+	}
+	if webIndex == -1 {
+		t.Fatalf("expected web step, got %#v", steps)
+	}
+	if mysqlIndex != webIndex+1 {
+		t.Fatalf("expected mysql step immediately after web step, got web=%d mysql=%d", webIndex, mysqlIndex)
+	}
+	if emailIndex <= mysqlIndex {
+		t.Fatalf("expected email step after mysql step, got mysql=%d email=%d", mysqlIndex, emailIndex)
+	}
+}
+
+func TestPackagesWithDBServerDefaultsUsesMariaDBSavedVersion(t *testing.T) {
+	t.Parallel()
+
+	packages := packagesWithDBServerDefaults(
+		[]Package{{Name: "mysql-server"}, {Name: "exim"}},
+		[]DBServer{{Name: "MySQL", Type: "mysql", SavedVer: "10.5.29-MariaDB"}},
+	)
+	set := packageSetFromSource(packages)
+	if !hasPackage(set, "mariadb-server") {
+		t.Fatalf("expected mariadb-server package from MariaDB savedver, got %#v", packages)
+	}
+	if hasPackage(set, "mysql-server") {
+		t.Fatalf("did not expect mysql-server to remain when source MySQL server is MariaDB, got %#v", packages)
+	}
+}
+
+func TestPackagesWithDBServerDefaultsUsesMySQLSavedVersion(t *testing.T) {
+	t.Parallel()
+
+	packages := packagesWithDBServerDefaults(
+		[]Package{{Name: "mariadb-server"}, {Name: "exim"}},
+		[]DBServer{{Name: "MySQL", Type: "mysql", SavedVer: "8.0.45-0ubuntu0.24.04.1"}},
+	)
+	set := packageSetFromSource(packages)
+	if !hasPackage(set, "mysql-server") {
+		t.Fatalf("expected mysql-server package from non-MariaDB savedver, got %#v", packages)
+	}
+	if hasPackage(set, "mariadb-server") {
+		t.Fatalf("did not expect mariadb-server to remain when source MySQL server is MySQL, got %#v", packages)
+	}
+}
+
+func TestBuildPackageSyncStepsUsesMariaDBForMySQLFeatureOnDebian(t *testing.T) {
+	t.Parallel()
+
+	steps, warnings := buildPackageSyncSteps(
+		[]Package{{Name: "mysql-server"}},
+		map[string]struct{}{},
+		packagePlanOptions{TargetOS: "Debian GNU/Linux 12 (bookworm)", TargetPanel: "ispmanager Lite"},
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	var mysqlStep *packageSyncStep
+	for i := range steps {
+		if steps[i].Feature == "mysql" {
+			mysqlStep = &steps[i]
+			break
+		}
+	}
+	if mysqlStep == nil {
+		t.Fatalf("expected mysql step, got %#v", steps)
+	}
+	if !strings.Contains(mysqlStep.Command, "packagegroup_mysql=mariadb-server") {
+		t.Fatalf("expected Debian target to force mariadb-server, got %q", mysqlStep.Command)
+	}
+	if strings.Contains(mysqlStep.Command, "packagegroup_mysql=mysql-server") {
+		t.Fatalf("did not expect mysql-server on Debian target, got %q", mysqlStep.Command)
+	}
+}
+
 func TestBuildPackageSyncStepsCombinesAltPHPVersionsIntoSingleStep(t *testing.T) {
 	t.Parallel()
 

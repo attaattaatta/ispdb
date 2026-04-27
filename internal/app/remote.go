@@ -109,7 +109,9 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 	if err := runner.ensureDestinationRoot(ctx); err != nil {
 		return err
 	}
-	defer runner.printRemoteSummary(ctx, data, cfg.DestScope, err)
+	defer func() {
+		runner.printRemoteSummary(ctx, data, cfg.DestScope, err)
+	}()
 
 	var backupPath string
 	if err := runner.runAction("creating backup on remote side", func() error {
@@ -234,14 +236,17 @@ func runRemoteWorkflowWithRunner(ctx context.Context, runner *remoteRunner, data
 			runner.recordFailure(describeRemoteCommand(rewrittenCommand), err)
 			return err
 		}
-		prunedCommand, prunedNotes, err := runner.pruneEntityCommand(ctx, rewrittenCommand)
-		if err != nil {
-			runner.recordFailure(describeRemoteCommand(rewrittenCommand), err)
-			return err
-		}
-		rewrittenCommand = prunedCommand
-		for _, note := range prunedNotes {
-			runner.logger.Info("remote command was adjusted to destination form", "note", note, "command", rewrittenCommand)
+		function, _, _ := parseMgrctlCommand(rewrittenCommand)
+		if !shouldSkipFormPruningForEmptyInventory(function, runner.inventory) {
+			prunedCommand, prunedNotes, err := runner.pruneEntityCommand(ctx, rewrittenCommand)
+			if err != nil {
+				runner.recordFailure(describeRemoteCommand(rewrittenCommand), err)
+				return err
+			}
+			rewrittenCommand = prunedCommand
+			for _, note := range prunedNotes {
+				runner.logger.Info("remote command was adjusted to destination form", "note", note, "command", rewrittenCommand)
+			}
 		}
 		rewrittenCommand, err = runner.prepareRemoteSiteCommand(ctx, rewrittenCommand)
 		if err != nil {
@@ -383,7 +388,8 @@ func (r *remoteRunner) destinationPackageSteps(ctx context.Context, data SourceD
 		return nil, nil, err
 	}
 	currentPackages := installedPackagesFromFeatures(records, licInfo["os"])
-	steps, warnings := buildPackageSyncSteps(data.Packages, currentPackages, packagePlanOptions{
+	sourcePackages := packagesWithDBServerDefaults(data.Packages, data.DBServers)
+	steps, warnings := buildPackageSyncSteps(sourcePackages, currentPackages, packagePlanOptions{
 		TargetOS:         licInfo["os"],
 		TargetPanel:      licInfo["panel_name"],
 		NoDeletePackages: r.cfg.NoDeletePackages,

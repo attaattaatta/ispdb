@@ -57,7 +57,8 @@ func buildCommandsForScopes(data SourceData, scopes []string, options CommandBui
 	for _, scope := range scopes {
 		switch scope {
 		case "packages":
-			packageGroups, packageWarnings := buildPackageCommandGroupsWithCurrent(data.Packages, options.TargetOS, options.TargetPanel, options.CurrentPackages, options.NoDeletePackages)
+			sourcePackages := packagesWithDBServerDefaults(data.Packages, data.DBServers)
+			packageGroups, packageWarnings := buildPackageCommandGroupsWithCurrent(sourcePackages, options.TargetOS, options.TargetPanel, options.CurrentPackages, options.NoDeletePackages)
 			groups = append(groups, packageGroups...)
 			warnings = append(warnings, packageWarnings...)
 		case "users":

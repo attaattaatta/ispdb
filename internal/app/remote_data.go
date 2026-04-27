@@ -338,7 +338,7 @@ func (r *remoteRunner) loadRemoteRawSource(ctx context.Context) (remoteRawSource
 
 	password, err := r.readRemoteMySQLPassword(remoteMyCNFPath)
 	if err != nil {
-		return remoteRawSourceBundle{}, fmt.Errorf("%sremote SQLite database was not found and MySQL password was not found in %s: %w%s", colorRed, remoteMyCNFPath, err, colorReset)
+		return remoteRawSourceBundle{}, fmt.Errorf("%sremote SQLite database was not found and MySQL password was not found in %s: %w\nispmanager probably not installed%s", colorRed, remoteMyCNFPath, err, colorReset)
 	}
 
 	keyLocalPath := ""
